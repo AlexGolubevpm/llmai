@@ -360,4 +360,94 @@ if st.button("Отправить одиночный промпт"):
         )
         final_response = custom_postprocess_text(raw_response)
         st.success("Результат получен!")
-        st.text_area("Ответ от модели", value=final_response, height
+        st.text_area("Ответ от модели", value=final_response, height=200)
+
+# Разделительная линия
+st.markdown("---")
+
+########################################
+# Блок обработки файла
+########################################
+st.subheader("Обработка данных из файла")
+
+user_prompt = st.text_area("Пользовательский промпт (дополнительно к заголовку)")
+
+st.markdown("##### Настройка парсинга TXT/CSV")
+delimiter_input = st.text_input("Разделитель (delimiter)", value="|")
+column_input = st.text_input("Названия колонок (через запятую)", value="id,title")
+
+uploaded_file = st.file_uploader("Прикрепить файл (CSV или TXT, до 100000 строк)", type=["csv", "txt"])
+
+df = None
+if uploaded_file is not None:
+    file_extension = uploaded_file.name.split(".")[-1]
+    try:
+        if file_extension == "csv":
+            df = pd.read_csv(uploaded_file)
+        else:
+            content = uploaded_file.read().decode("utf-8")
+            lines = content.splitlines()
+
+            columns = [c.strip() for c in column_input.split(",")]
+
+            parsed_lines = []
+            for line in lines:
+                splitted = line.split(delimiter_input, maxsplit=len(columns) - 1)
+                parsed_lines.append(splitted)
+
+            df = pd.DataFrame(parsed_lines, columns=columns)
+
+        st.write("### Предпросмотр файла")
+        st.dataframe(df.head())
+    except Exception as e:
+        st.error(f"Ошибка при чтении файла: {e}")
+        df = None
+
+if df is not None:
+    cols = df.columns.tolist()
+    title_col = st.selectbox("Какая колонка является заголовком?", cols)
+
+    # Ползунок для выбора кол-ва потоков
+    max_workers = st.slider("Потоки (max_workers)", min_value=1, max_value=20, value=5)
+
+    if st.button("Запустить обработку файла"):
+        if not api_key:
+            st.error("API Key не указан!")
+        else:
+            row_count = len(df)
+            if row_count > 100000:
+                st.warning(f"Файл содержит {row_count} строк. Это превышает рекомендованный лимит в 100000.")
+            st.info("Начинаем обработку, пожалуйста подождите...")
+
+            df_out = process_file(
+                api_key=api_key,
+                model=selected_model,
+                system_prompt=get_language_system_prompt(target_language, system_prompt),
+                user_prompt=user_prompt,
+                df=df,
+                title_col=title_col,
+                response_format="csv",
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                min_p=min_p,
+                top_k=top_k,
+                presence_penalty=presence_penalty,
+                frequency_penalty=frequency_penalty,
+                repetition_penalty=repetition_penalty,
+                chunk_size=10,
+                max_workers=max_workers
+            )
+
+            st.success("Обработка завершена!")
+
+            # Скачивание
+            if output_format == "csv":
+                csv_out = df_out.to_csv(index=False).encode("utf-8")
+                st.download_button("Скачать результат (CSV)", data=csv_out, file_name="result.csv", mime="text/csv")
+            else:
+                txt_out = df_out.to_csv(index=False, sep="|", header=False).encode("utf-8")
+                st.download_button("Скачать результат (TXT)", data=txt_out, file_name="result.txt", mime="text/plain")
+
+            st.write("### Логи")
+            st.write("Обработка завершена, строк обработано:", len(df_out))
