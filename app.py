@@ -21,7 +21,7 @@ DEFAULT_API_KEY = "sk_MyidbhnT9jXzw-YDymhijjY8NF15O0Qy7C36etNTAxE"
 # Максимальное количество повторных попыток при 429 (Rate Limit)
 MAX_RETRIES = 3
 
-# Словарь доступных языков
+# Языковые настройки
 SOURCE_LANGUAGES = {
     "Auto": "Auto-detect language",
     "English": "English source text",
@@ -32,63 +32,124 @@ SOURCE_LANGUAGES = {
 
 TARGET_LANGUAGES = {
     "English": "Translate to English",
-    "Japanese": "Translate to Japanese (日本語)", 
+    "Japanese": "Translate to Japanese (日本語)",
     "Chinese": "Translate to Chinese (中文)",
     "Hindi": "Translate to Hindi (हिन्दी)"
 }
 
-st.set_page_config(page_title="Novita AI Batch Processor", layout="wide")
+st.set_page_config(page_title="Novita AI Translation", layout="wide")
 
 #######################################
-# 2) Вспомогательные ФУНКЦИИ
+# 2) ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 #######################################
+
+def detect_primary_language(text: str) -> str:
+    """
+    Определяет основной язык текста по базовым признакам
+    """
+    japanese_chars = len([c for c in text if '\u4e00' <= c <= '\u9fff' or '\u3040' <= c <= '\u309f'])
+    chinese_chars = len([c for c in text if '\u4e00' <= c <= '\u9fff'])
+    english_chars = len([c for c in text if ord('a') <= ord(c.lower()) <= ord('z')])
+    
+    if japanese_chars > len(text) * 0.3:
+        return "Japanese"
+    elif chinese_chars > len(text) * 0.3:
+        return "Chinese"
+    elif english_chars > len(text) * 0.3:
+        return "English"
+    return "Auto"
 
 def get_language_system_prompt(source_lang: str, target_lang: str, base_prompt: str) -> str:
     """
-    Generate system prompt based on source and target languages
+    Enhanced system prompt generator with better mixed language handling
     """
     if source_lang == target_lang:
         return base_prompt
     
-    language_instructions = {
-        ("English", "Japanese"): """
-            Translate the following English text to Japanese.
-            Rules:
-            - Keep names unchanged
+    base_rules = """
+    Translation Rules:
+    1. Preserve all names exactly as they appear
+    2. Keep technical terms intact
+    3. Maintain the original tone and style
+    4. Handle mixed language content appropriately
+    5. Ensure consistent translation of repeated phrases
+    """
+    
+    language_specific = {
+        ("Auto", "Chinese"): """
+            将所有文本翻译成中文：
+            - 保持人名不变
+            - 保持技术术语不变
+            - 对于混合语言文本，将非中文部分翻译成中文
+            - 保持原文的语气和风格
+            - 使用自然的中文表达
+            - 对于成人内容，使用适当委婉的表达方式
+        """,
+        ("Auto", "Japanese"): """
+            すべてのテキストを日本語に翻訳：
+            - 人名はそのまま保持
+            - 技術用語はそのまま保持
+            - 混合言語テキストの場合、日本語以外の部分を翻訳
+            - 原文のトーンとスタイルを維持
+            - 自然な日本語表現を使用
+            - アダルトコンテンツには適切な婉曲表現を使用
+        """,
+        ("Auto", "English"): """
+            Translate all text to English:
+            - Keep personal names unchanged
             - Preserve technical terms
-            - Maintain the original style and tone
-            - Ensure natural Japanese expression
+            - For mixed language text, translate non-English parts
+            - Maintain original tone and style
+            - Use natural English expressions
+            - Use appropriate euphemisms for adult content
         """,
         ("English", "Chinese"): """
-            Translate the following English text to Chinese.
-            Rules:
-            - Keep names unchanged
+            Identify English text and translate to Chinese:
+            - Keep all names in original form
             - Preserve technical terms
-            - Maintain the original style and tone
-            - Use appropriate Chinese characters
+            - Translate only confirmed English parts
+            - Use natural Chinese expressions
+            - For adult content, use appropriate Chinese terms
         """,
-        ("English", "Hindi"): """
-            Translate the following English text to Hindi.
-            Rules:
-            - Keep names unchanged
+        ("Japanese", "English"): """
+            Identify Japanese text and translate to English:
+            - Keep Japanese names in original form
             - Preserve technical terms
-            - Maintain the original style and tone
-            - Use proper Hindi grammar
-        """,
-        # Add other language pair combinations here
+            - Translate only confirmed Japanese parts
+            - Use natural English expressions
+            - For adult content, use appropriate English terms
+        """
     }
     
-    # Get instructions for the language pair, or generate generic instructions
+    mixed_language_handling = """
+    Mixed Language Handling:
+    1. Identify the primary language in each segment
+    2. Preserve any intentionally mixed language elements
+    3. Translate only the parts that match the source language
+    4. Keep formatting and structure intact
+    5. Handle adult content appropriately in target language
+    """
+    
     pair_key = (source_lang, target_lang)
-    if pair_key in language_instructions:
-        return f"{base_prompt}\n\n{language_instructions[pair_key]}"
-    else:
-        return f"{base_prompt}\n\nTranslate from {source_lang} to {target_lang}, keeping names and technical terms unchanged."
+    specific_instructions = language_specific.get(pair_key, "")
+    
+    full_prompt = f"""
+    {base_prompt}
+    
+    {base_rules}
+    
+    {specific_instructions}
+    
+    {mixed_language_handling}
+    
+    Current translation direction: {source_lang} → {target_lang}
+    """
+    
+    return full_prompt
 
 def custom_postprocess_text(text: str) -> str:
     """
     Убираем 'fucking' (в любом регистре) только в начале строки.
-    Если в середине — оставляем.
     """
     pattern_start = re.compile(r'^(fucking\s*)', re.IGNORECASE)
     text = pattern_start.sub('', text)
@@ -154,15 +215,12 @@ def chat_completion_request(
                 data = resp.json()
                 return data["choices"][0]["message"].get("content", "")
             elif resp.status_code == 429:
-                # rate limit exceeded, ждем 2 сек
                 time.sleep(2)
-                # и попробуем снова
                 continue
             else:
                 return f"Ошибка: {resp.status_code} - {resp.text}"
         except Exception as e:
             return f"Исключение: {e}"
-    # Если все попытки исчерпаны
     return "Ошибка: Превышено число попыток при 429 RATE_LIMIT."
 
 def process_single_row(
@@ -171,6 +229,8 @@ def process_single_row(
     system_prompt: str,
     user_prompt: str,
     row_text: str,
+    source_lang: str,
+    target_lang: str,
     max_tokens: int,
     temperature: float,
     top_p: float,
@@ -180,11 +240,20 @@ def process_single_row(
     frequency_penalty: float,
     repetition_penalty: float
 ):
-    """Функция-обёртка для параллельного вызова."""
+    """Обновленная функция обработки одной строки с поддержкой языков"""
+    if source_lang == "Auto":
+        detected_lang = detect_primary_language(row_text)
+        actual_source = detected_lang
+    else:
+        actual_source = source_lang
+
+    final_prompt = get_language_system_prompt(actual_source, target_lang, system_prompt)
+    
     messages = [
-        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": final_prompt},
         {"role": "user", "content": f"{user_prompt}\n{row_text}"}
     ]
+    
     raw_response = chat_completion_request(
         api_key,
         messages,
@@ -199,9 +268,7 @@ def process_single_row(
         repetition_penalty
     )
 
-    # Постобработка: убираем banned words
-    final_response = custom_postprocess_text(raw_response)
-    return final_response
+    return custom_postprocess_text(raw_response)
 
 def process_file(
     api_key: str,
@@ -209,7 +276,9 @@ def process_file(
     system_prompt: str,
     user_prompt: str,
     df: pd.DataFrame,
-    title_col: str,  # Название колонки, которую надо переписать
+    title_col: str,
+    source_lang: str,
+    target_lang: str,
     response_format: str,
     max_tokens: int,
     temperature: float,
@@ -219,13 +288,13 @@ def process_file(
     presence_penalty: float,
     frequency_penalty: float,
     repetition_penalty: float,
-    chunk_size: int = 10,  # фиксируем 10 строк в чанке
-    max_workers: int = 5  # Количество потоков
+    chunk_size: int = 10,
+    max_workers: int = 5
 ):
     """Параллельно обрабатываем загруженный файл построчно (или чанками)."""
 
     progress_bar = st.progress(0)
-    time_placeholder = st.empty()  # для отображения оставшегося времени
+    time_placeholder = st.empty()
 
     results = []
     total_rows = len(df)
@@ -237,7 +306,6 @@ def process_file(
         chunk_start_time = time.time()
         end_idx = min(start_idx + chunk_size, total_rows)
 
-        # Берём индексы строк в этом чанке
         chunk_indices = list(df.index[range(start_idx, end_idx)])
         chunk_size_actual = len(chunk_indices)
         chunk_results = [None] * chunk_size_actual
@@ -253,6 +321,8 @@ def process_file(
                     system_prompt,
                     user_prompt,
                     row_text,
+                    source_lang,
+                    target_lang,
                     max_tokens,
                     temperature,
                     top_p,
@@ -268,7 +338,6 @@ def process_file(
                 i = future_to_i[future]
                 chunk_results[i] = future.result()
 
-        # Расширяем общий список результатов
         results.extend(chunk_results)
 
         lines_processed += chunk_size_actual
@@ -287,9 +356,8 @@ def process_file(
                     time_text = f"~{est_time_left_min:.1f} мин."
                 time_placeholder.info(f"Примерное оставшееся время: {time_text}")
 
-    # Создаем копию df с новым столбцом
     df_out = df.copy()
-    df_out["rewrite"] = results
+    df_out["translation"] = results
 
     elapsed = time.time() - start_time
     time_placeholder.success(f"Обработка завершена за {elapsed:.1f} секунд.")
@@ -300,49 +368,36 @@ def process_file(
 # 4) ИНТЕРФЕЙС
 #######################################
 
-st.title("🧠 Novita AI Batch Processing")
+st.title("🌎 Novita AI Batch Translation")
 
 # Три колонки для лучшей организации
 left_col, middle_col, right_col = st.columns([1, 1, 1])
 
 ########################################
-# Левая колонка: Список моделей и язык
+# Левая колонка: Список моделей
 ########################################
 with left_col:
-    st.markdown("#### Модели и язык")
-    st.caption("Список моделей загружается из API Novita AI")
+    st.markdown("#### Model Selection")
+    st.caption("Models are loaded from Novita AI API")
 
     api_key = st.text_input("API Key", value=DEFAULT_API_KEY, type="password")
-    
-    # Добавляем выбор языка
-    source_language = st.selectbox(
-    "Source Language",
-    options=list(SOURCE_LANGUAGES.keys()),
-    format_func=lambda x: SOURCE_LANGUAGES[x]
-)
 
-target_language = st.selectbox(
-    "Target Language",
-    options=list(TARGET_LANGUAGES.keys()),
-    format_func=lambda x: TARGET_LANGUAGES[x]
-)
-
-if st.button("Обновить список моделей"):
+    if st.button("Update Model List"):
         if not api_key:
-            st.error("Ключ API пуст")
+            st.error("API Key is empty")
             model_list = []
         else:
             model_list = get_model_list(api_key)
             st.session_state["model_list"] = model_list
 
-if "model_list" not in st.session_state:
+    if "model_list" not in st.session_state:
         st.session_state["model_list"] = []
 
-if len(st.session_state["model_list"]) > 0:
-        selected_model = st.selectbox("Выберите модель", st.session_state["model_list"])
-else:
+    if len(st.session_state["model_list"]) > 0:
+        selected_model = st.selectbox("Select Model", st.session_state["model_list"])
+    else:
         selected_model = st.selectbox(
-            "Выберите модель",
+            "Select Model",
             ["meta-llama/llama-3.1-8b-instruct", "Nous-Hermes-2-Mixtral-8x7B-DPO"]
         )
 
@@ -350,15 +405,18 @@ else:
 # Средняя колонка: Настройки генерации
 ########################################
 with middle_col:
-    st.markdown("#### Параметры генерации")
+    st.markdown("#### Generation Parameters")
     output_format = st.selectbox("Output Format", ["csv", "txt"])
-    system_prompt = st.text_area("System Prompt", value="Act like you are a helpful assistant.")
+    system_prompt = st.text_area(
+        "System Prompt", 
+        value="You are a professional translator. Translate the following text while preserving names, terms and maintaining the original style."
+    )
 
 ########################################
 # Правая колонка: Дополнительные параметры
 ########################################
 with right_col:
-    st.markdown("#### Дополнительные параметры")
+    st.markdown("#### Additional Parameters")
     max_tokens = st.slider("max_tokens", min_value=0, max_value=64000, value=512, step=1)
     temperature = st.slider("temperature", min_value=0.0, max_value=2.0, value=0.7, step=0.01)
     top_p = st.slider("top_p", min_value=0.0, max_value=1.0, value=1.0, step=0.01)
@@ -372,20 +430,36 @@ with right_col:
 st.markdown("---")
 
 ########################################
-# Поле одиночного промпта
+# Блок одиночного перевода
 ########################################
-st.subheader("Одиночный промпт")
-user_prompt_single = st.text_area("Введите ваш промпт для одиночной генерации")
+st.subheader("Single Text Translation")
+user_prompt_single = st.text_area("Enter text to translate")
 
-if st.button("Отправить одиночный промпт"):
+# Выбор языков для одиночного перевода
+single_source_lang = st.selectbox(
+    "Source Language",
+    options=list(SOURCE_LANGUAGES.keys()),
+    format_func=lambda x: SOURCE_LANGUAGES[x],
+    key="single_source"
+)
+
+single_target_lang = st.selectbox(
+    "Target Language",
+    options=list(TARGET_LANGUAGES.keys()),
+    format_func=lambda x: TARGET_LANGUAGES[x],
+    key="single_target"
+)
+
+if st.button("Translate Single Text"):
     if not api_key:
-        st.error("API Key не указан!")
+        st.error("API Key is missing!")
     else:
+        final_prompt = get_language_system_prompt(single_source_lang, single_target_lang, system_prompt)
         from_text = [
-            {"role": "system", "content": get_language_system_prompt(target_language, system_prompt)},
+            {"role": "system", "content": final_prompt},
             {"role": "user", "content": user_prompt_single}
         ]
-        st.info("Отправляем запрос...")
+        st.info("Sending request...")
         raw_response = chat_completion_request(
             api_key=api_key,
             messages=from_text,
@@ -400,8 +474,8 @@ if st.button("Отправить одиночный промпт"):
             repetition_penalty=repetition_penalty
         )
         final_response = custom_postprocess_text(raw_response)
-        st.success("Результат получен!")
-        st.text_area("Ответ от модели", value=final_response, height=200)
+        st.success("Translation complete!")
+        st.text_area("Translated Text", value=final_response, height=200)
 
 # Разделительная линия
 st.markdown("---")
@@ -409,15 +483,30 @@ st.markdown("---")
 ########################################
 # Блок обработки файла
 ########################################
-st.subheader("Обработка данных из файла")
+st.subheader("Batch File Translation")
 
-user_prompt = st.text_area("Пользовательский промпт (дополнительно к заголовку)")
+user_prompt = st.text_area("Additional translation instructions (optional)")
 
-st.markdown("##### Настройка парсинга TXT/CSV")
-delimiter_input = st.text_input("Разделитель (delimiter)", value="|")
-column_input = st.text_input("Названия колонок (через запятую)", value="id,title")
+st.markdown("##### File Parsing Settings")
+delimiter_input = st.text_input("Delimiter", value="|")
+column_input = st.text_input("Column names (comma-separated)", value="id,title")
 
-uploaded_file = st.file_uploader("Прикрепить файл (CSV или TXT, до 100000 строк)", type=["csv", "txt"])
+uploaded_file = st.file_uploader("Upload file (CSV or TXT, up to 100000 lines)", type=["csv", "txt"])
+
+# Выбор языков для пакетного перевода
+batch_source_lang = st.selectbox(
+    "Source Language for Batch Translation",
+    options=list(SOURCE_LANGUAGES.keys()),
+    format_func=lambda x: SOURCE_LANGUAGES[x],
+    key="batch_source"
+)
+
+batch_target_lang = st.selectbox(
+    "Target Language for Batch Translation",
+    options=list(TARGET_LANGUAGES.keys()),
+    format_func=lambda x: TARGET_LANGUAGES[x],
+    key="batch_target"
+)
 
 df = None
 if uploaded_file is not None:
@@ -438,36 +527,37 @@ if uploaded_file is not None:
 
             df = pd.DataFrame(parsed_lines, columns=columns)
 
-        st.write("### Предпросмотр файла")
+        st.write("### File Preview")
         st.dataframe(df.head())
     except Exception as e:
-        st.error(f"Ошибка при чтении файла: {e}")
+        st.error(f"Error reading file: {e}")
         df = None
 
 if df is not None:
     cols = df.columns.tolist()
-    title_col = st.selectbox("Какая колонка является заголовком?", cols)
+    title_col = st.selectbox("Which column contains text to translate?", cols)
 
-    # Ползунок для выбора кол-ва потоков
-    max_workers = st.slider("Потоки (max_workers)", min_value=1, max_value=20, value=5)
+    max_workers = st.slider("Threads (max_workers)", min_value=1, max_value=20, value=5)
 
-    if st.button("Запустить обработку файла"):
+    if st.button("Start Batch Translation"):
         if not api_key:
-            st.error("API Key не указан!")
+            st.error("API Key is missing!")
         else:
             row_count = len(df)
             if row_count > 100000:
-                st.warning(f"Файл содержит {row_count} строк. Это превышает рекомендованный лимит в 100000.")
-            st.info("Начинаем обработку, пожалуйста подождите...")
+                st.warning(f"File contains {row_count} rows. This exceeds the recommended limit of 100000.")
+            st.info("Starting translation, please wait...")
 
             df_out = process_file(
                 api_key=api_key,
                 model=selected_model,
-                system_prompt=get_language_system_prompt(source_language, target_language, system_prompt),
+                system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 df=df,
                 title_col=title_col,
-                response_format="csv",
+                source_lang=batch_source_lang,
+                target_lang=batch_target_lang,
+                response_format=output_format,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
@@ -480,15 +570,15 @@ if df is not None:
                 max_workers=max_workers
             )
 
-            st.success("Обработка завершена!")
+            st.success("Translation complete!")
 
-            # Скачивание
+            # Download options
             if output_format == "csv":
                 csv_out = df_out.to_csv(index=False).encode("utf-8")
-                st.download_button("Скачать результат (CSV)", data=csv_out, file_name="result.csv", mime="text/csv")
+                st.download_button("Download Result (CSV)", data=csv_out, file_name="translations.csv", mime="text/csv")
             else:
                 txt_out = df_out.to_csv(index=False, sep="|", header=False).encode("utf-8")
-                st.download_button("Скачать результат (TXT)", data=txt_out, file_name="result.txt", mime="text/plain")
+                st.download_button("Download Result (TXT)", data=txt_out, file_name="translations.txt", mime="text/plain")
 
-            st.write("### Логи")
-            st.write("Обработка завершена, строк обработано:", len(df_out))
+            st.write("### Results")
+            st.write("Processing completed, rows processed:", len(df_out))
