@@ -73,10 +73,6 @@ def process_file(
         
         for idx, row in chunk.iterrows():
             # Формируем сообщение
-            # Примечание: Можно конкатенировать user_prompt и row['text'], 
-            # или рассматривать row['text'] отдельно
-
-            # messages
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"{user_prompt}\n{str(row[0])}"}  # Предполагаем, что текст в первой колонке
@@ -107,7 +103,6 @@ def process_file(
                 if resp.status_code == 200:
                     data = resp.json()
                     # Извлекаем ответ из data
-                    # Предполагаем, что он лежит data["choices"][0]["message"]["content"]
                     content = data["choices"][0]["message"].get("content", "")
                     results.append(content)
                 else:
@@ -128,20 +123,17 @@ def process_file(
 # 3) ИНТЕРФЕЙС
 #######################################
 
-# Заголовок
 st.title("🧠 Novita AI Batch Processing")
 
-# Верхний блок (левая колонка: выбор модели, правая: настройки)
 left_col, right_col = st.columns([1,1])
 
+# Левая колонка: список моделей
 with left_col:
     st.markdown("#### Модели")
     st.caption("Список моделей загружается из API Novita AI")
-    
-    # Поле для ввода API Key (по умолчанию уже заполнен)
+
     api_key = st.text_input("API Key", value=DEFAULT_API_KEY, type="password")
-    
-    # Кнопка, чтобы загрузить список моделей
+
     if st.button("Обновить список моделей"):
         if not api_key:
             st.error("Ключ API пуст")
@@ -150,17 +142,15 @@ with left_col:
             model_list = get_model_list(api_key)
             st.session_state["model_list"] = model_list
 
-    # Если в session_state нет model_list, инициализируем пустым
     if "model_list" not in st.session_state:
         st.session_state["model_list"] = []
 
-    # Выбор модели
     if len(st.session_state["model_list"]) > 0:
         selected_model = st.selectbox("Выберите модель", st.session_state["model_list"])
     else:
-        # Заранее дефолт (хотя можно оставить пустым)
         selected_model = st.selectbox("Выберите модель", ["meta-llama/llama-3.1-8b-instruct", "Nous-Hermes-2-Mixtral-8x7B-DPO"])
 
+# Правая колонка: настройки модели
 with right_col:
     st.markdown("#### Параметры генерации")
     response_format = st.selectbox("Response Format", ["text", "csv"])
@@ -175,28 +165,22 @@ with right_col:
     frequency_penalty = st.slider("frequency_penalty", min_value=0.0, max_value=2.0, value=0.0, step=0.01)
     repetition_penalty = st.slider("repetition_penalty", min_value=0.0, max_value=2.0, value=1.0, step=0.01)
 
-#######################################
-# Основной блок
-#######################################
-
 st.markdown("---")
 st.subheader("Обработка данных")
 
-# Поле для пользовательского промпта
 user_prompt = st.text_area("Пользовательский промпт")
 
-# Загрузка файла
 uploaded_file = st.file_uploader("Прикрепить файл (CSV или TXT, до 100000 строк)", type=["csv", "txt"])
 
-# Превью и запуск
 if uploaded_file is not None:
     file_extension = uploaded_file.name.split(".")[-1]
-    # Пробуем считать файл
     try:
         if file_extension == "csv":
+            # читаем CSV обычным способом
             df = pd.read_csv(uploaded_file)
         else:
-            df = pd.read_csv(uploaded_file, delimiter="\n", header=None)
+            # читаем TXT с помощью engine='python' и delimiter='\n'
+            df = pd.read_csv(uploaded_file, delimiter="\n", header=None, engine='python')
         st.write("### Предпросмотр файла")
         st.dataframe(df.head())
     except Exception as e:
@@ -204,17 +188,15 @@ if uploaded_file is not None:
         df = None
 
     if df is not None:
-        # Кнопка запуска
         if st.button("Запустить"):
             if not api_key:
                 st.error("API Key не указан!")
             else:
-                # Проверяем кол-во строк
                 row_count = len(df)
                 if row_count > 100000:
                     st.warning(f"Файл содержит {row_count} строк. Это превышает рекомендованный лимит в 100000.")
                 st.info("Начинаем обработку, пожалуйста подождите...")
-                
+
                 df_out = process_file(
                     api_key=api_key,
                     model=selected_model,
@@ -233,16 +215,13 @@ if uploaded_file is not None:
                 )
 
                 st.success("Обработка завершена!")
-                
-                # Показываем результат
+
+                # Вывод результата
                 if response_format == "text":
-                    # Просто отобразим в тексте
                     st.text_area("Результат", value="\n".join(df_out["response"].astype(str)), height=300)
                 else:
-                    # Генерируем CSV и даем скачать
                     csv_out = df_out.to_csv(index=False).encode("utf-8")
                     st.download_button("Скачать результат (CSV)", data=csv_out, file_name="result.csv", mime="text/csv")
 
-                # Лог выполнения (минимальный)
                 st.write("### Логи")
                 st.write("Обработка завершена, строк обработано:", len(df_out))
