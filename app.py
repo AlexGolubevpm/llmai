@@ -42,26 +42,12 @@ def get_model_list(api_key: str):
         return []
 
 
-def send_single_prompt(
-    api_key: str,
-    model: str,
-    system_prompt: str,
-    user_prompt: str,
-    max_tokens: int,
-    temperature: float,
-    top_p: float,
-    min_p: float,
-    top_k: int,
-    presence_penalty: float,
-    frequency_penalty: float,
-    repetition_penalty: float
-):
-    """Отправляет одиночный промпт без файла."""
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt}
-    ]
-
+def chat_completion_request(api_key: str, messages: list, model: str,
+                            max_tokens: int, temperature: float, top_p: float,
+                            min_p: float, top_k: int,
+                            presence_penalty: float, frequency_penalty: float,
+                            repetition_penalty: float):
+    """Функция для отправки chat-комплишена со списком сообщений."""
     payload = {
         "model": model,
         "messages": messages,
@@ -84,12 +70,37 @@ def send_single_prompt(
         resp = requests.post(CHAT_COMPLETIONS_ENDPOINT, headers=headers, data=json.dumps(payload))
         if resp.status_code == 200:
             data = resp.json()
-            content = data["choices"][0]["message"].get("content", "")
-            return content
+            return data["choices"][0]["message"].get("content", "")
         else:
             return f"Ошибка: {resp.status_code} - {resp.text}"
     except Exception as e:
         return f"Исключение: {e}"
+
+
+def send_single_prompt(
+    api_key: str,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    min_p: float,
+    top_k: int,
+    presence_penalty: float,
+    frequency_penalty: float,
+    repetition_penalty: float
+):
+    """Отправляет одиночный промпт без файла."""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ]
+    return chat_completion_request(api_key, messages, model,
+                                  max_tokens, temperature, top_p,
+                                  min_p, top_k,
+                                  presence_penalty, frequency_penalty,
+                                  repetition_penalty)
 
 
 def process_file(
@@ -107,27 +118,24 @@ def process_file(
     presence_penalty: float,
     frequency_penalty: float,
     repetition_penalty: float,
-    chunk_size: int = 5000
+    chunk_size: int = 10  # фиксируем 10 строк в чанке
 ):
     """Обрабатываем загруженный файл построчно (или чанками) с отображением примерного оставшегося времени."""
 
-    # Элементы UI для прогресса
     progress_bar = st.progress(0)
     time_placeholder = st.empty()  # для отображения оставшегося времени
 
     results = []
     total_rows = len(df)
 
-    # Засекаем время старта
     start_time = time.time()
-    lines_processed = 0  # сколько строк уже обработано
+    lines_processed = 0
 
-    # Разбиваем на чанки, если нужно
     for start_idx in range(0, total_rows, chunk_size):
         chunk_start_time = time.time()
         end_idx = min(start_idx + chunk_size, total_rows)
         chunk = df.iloc[start_idx:end_idx]
-        chunk_size_actual = end_idx - start_idx  # фактическое кол-во строк в чанке
+        chunk_size_actual = end_idx - start_idx
 
         for idx, row in chunk.iterrows():
             row_text = str(row[0])
@@ -136,50 +144,22 @@ def process_file(
                 {"role": "user", "content": f"{user_prompt}\n{row_text}"}
             ]
 
-            payload = {
-                "model": model,
-                "messages": messages,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "top_p": top_p,
-                "top_k": top_k,
-                "presence_penalty": presence_penalty,
-                "frequency_penalty": frequency_penalty,
-                "repetition_penalty": repetition_penalty,
-                "min_p": min_p
-            }
-
-            try:
-                resp = requests.post(
-                    CHAT_COMPLETIONS_ENDPOINT,
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {api_key}"
-                    },
-                    data=json.dumps(payload)
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    content = data["choices"][0]["message"].get("content", "")
-                    results.append(content)
-                else:
-                    results.append(f"Error: {resp.status_code} - {resp.text}")
-            except Exception as e:
-                results.append(f"Exception: {str(e)}")
+            content = chat_completion_request(api_key, messages, model,
+                                             max_tokens, temperature, top_p,
+                                             min_p, top_k,
+                                             presence_penalty, frequency_penalty,
+                                             repetition_penalty)
+            results.append(content)
 
         lines_processed += chunk_size_actual
-        # Прогресс
         progress_bar.progress(lines_processed / total_rows)
 
-        # Подсчет оставшегося времени
         time_for_chunk = time.time() - chunk_start_time
-        # если chunk_size_actual == 0, чтобы избежать деления на ноль
         if chunk_size_actual > 0:
             time_per_line = time_for_chunk / chunk_size_actual
             lines_left = total_rows - lines_processed
             if time_per_line > 0:
                 est_time_left_sec = lines_left * time_per_line
-                # Форматируем строку
                 if est_time_left_sec < 60:
                     time_text = f"~{est_time_left_sec:.1f} сек."
                 else:
@@ -190,14 +170,24 @@ def process_file(
     df_out = df.copy()
     df_out["response"] = results
 
-    # итоги
     elapsed = time.time() - start_time
     time_placeholder.success(f"Обработка завершена за {elapsed:.1f} секунд.")
 
     return df_out
 
 #######################################
-# 3) ИНТЕРФЕЙС
+# 3) ИСТОРИЯ ЧАТОВ / CHAT HISTORY
+#######################################
+
+def init_chat_history():
+    if "chat_history" not in st.session_state:
+        # Инициализируем с системным сообщением
+        st.session_state["chat_history"] = [
+            {"role": "system", "content": "Act like you are a helpful assistant."}
+        ]
+
+#######################################
+# 4) ИНТЕРФЕЙС
 #######################################
 
 st.title("🧠 Novita AI Batch Processing")
@@ -281,10 +271,63 @@ if st.button("Отправить одиночный промпт"):
         st.success("Результат получен!")
         st.text_area("Ответ от модели", value=single_result, height=200)
 
+# Разделительная линия
+st.markdown("---")
+
+########################################
+# Блок чата с историей (session_state)
+########################################
+st.subheader("Чат с историей (Session)")
+init_chat_history()
+
+chat_input = st.text_input("Ваше сообщение")
+
+if st.button("Отправить в чат"):
+    if not api_key:
+        st.error("API Key не указан!")
+    else:
+        if chat_input.strip() == "":
+            st.warning("Сообщение пустое!")
+        else:
+            # Добавляем новое сообщение от пользователя
+            st.session_state["chat_history"].append({"role": "user", "content": chat_input})
+            st.info("Запрос отправляется...")
+
+            # Отправляем ВСЮ историю на API
+            assistant_reply = chat_completion_request(
+                api_key=api_key,
+                messages=st.session_state["chat_history"],
+                model=selected_model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                min_p=min_p,
+                top_k=top_k,
+                presence_penalty=presence_penalty,
+                frequency_penalty=frequency_penalty,
+                repetition_penalty=repetition_penalty
+            )
+
+            # Добавляем ответ ассистента
+            st.session_state["chat_history"].append({"role": "assistant", "content": assistant_reply})
+            st.success("Ответ получен!")
+
+# Отображаем историю чата
+for msg in st.session_state["chat_history"]:
+    if msg["role"] == "system":
+        st.write(f"**System**: {msg['content']}")
+    elif msg["role"] == "user":
+        st.write(f"**User**: {msg['content']}")
+    else:
+        st.write(f"**Assistant**: {msg['content']}")
+
+
+# Разделительная линия
+st.markdown("---")
+
 ########################################
 # Блок обработки файла
 ########################################
-st.markdown("---")
 st.subheader("Обработка данных из файла")
 
 user_prompt = st.text_area("Пользовательский промпт (для каждой строки)")
@@ -332,6 +375,7 @@ if df is not None:
                 presence_penalty=presence_penalty,
                 frequency_penalty=frequency_penalty,
                 repetition_penalty=repetition_penalty,
+                chunk_size=10  # фиксируем 10 строк в чанке
             )
 
             st.success("Обработка завершена!")
@@ -345,3 +389,4 @@ if df is not None:
 
             st.write("### Логи")
             st.write("Обработка завершена, строк обработано:", len(df_out))
+
