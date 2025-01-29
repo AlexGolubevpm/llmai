@@ -1,6 +1,3 @@
-git add app.py
-git commit -m "Add app.py"
-git push origin main
 import streamlit as st
 import requests
 import json
