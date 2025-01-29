@@ -31,7 +31,6 @@ def get_model_list(api_key: str):
         resp = requests.get(LIST_MODELS_ENDPOINT, headers=headers)
         if resp.status_code == 200:
             data = resp.json()
-            # Предполагаем, что data["data"] содержит список моделей
             models = [m["id"] for m in data.get("data", [])]
             return models
         else:
@@ -40,6 +39,56 @@ def get_model_list(api_key: str):
     except Exception as e:
         st.error(f"Ошибка при получении списка моделей: {e}")
         return []
+
+
+def send_single_prompt(
+    api_key: str,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    min_p: float,
+    top_k: int,
+    presence_penalty: float,
+    frequency_penalty: float,
+    repetition_penalty: float
+):
+    """Отправляет одиночный промпт без файла."""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ]
+
+    payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "top_p": top_p,
+        "top_k": top_k,
+        "presence_penalty": presence_penalty,
+        "frequency_penalty": frequency_penalty,
+        "repetition_penalty": repetition_penalty,
+        "min_p": min_p
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
+
+    try:
+        resp = requests.post(CHAT_COMPLETIONS_ENDPOINT, headers=headers, data=json.dumps(payload))
+        if resp.status_code == 200:
+            data = resp.json()
+            content = data["choices"][0]["message"].get("content", "")
+            return content
+        else:
+            return f"Ошибка: {resp.status_code} - {resp.text}"
+    except Exception as e:
+        return f"Исключение: {e}"
 
 
 def process_file(
@@ -61,24 +110,22 @@ def process_file(
 ):
     """Обрабатываем загруженный файл построчно (или чанками)"""
 
-    # Прогресс-бар
     progress_bar = st.progress(0)
     results = []
-
-    # Чтобы избежать слишком больших запросов, разобьем на чанки
     total_rows = len(df)
+
+    # Разбиваем на чанки, если нужно
     for start_idx in range(0, total_rows, chunk_size):
         end_idx = min(start_idx + chunk_size, total_rows)
         chunk = df.iloc[start_idx:end_idx]
-        
+
         for idx, row in chunk.iterrows():
-            # Формируем сообщение
+            row_text = str(row[0])
             messages = [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"{user_prompt}\n{str(row[0])}"}  # Предполагаем, что текст в первой колонке
+                {"role": "user", "content": f"{user_prompt}\n{row_text}"}
             ]
 
-            # Параметры запроса
             payload = {
                 "model": model,
                 "messages": messages,
@@ -89,20 +136,20 @@ def process_file(
                 "presence_penalty": presence_penalty,
                 "frequency_penalty": frequency_penalty,
                 "repetition_penalty": repetition_penalty,
-                # Некоторые движки могут не поддерживать min_p;
-                # если Novita AI поддерживает, оставим, иначе уберем.
                 "min_p": min_p
             }
 
             try:
-                resp = requests.post(CHAT_COMPLETIONS_ENDPOINT, headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {api_key}"
-                }, data=json.dumps(payload))
-
+                resp = requests.post(
+                    CHAT_COMPLETIONS_ENDPOINT,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {api_key}"
+                    },
+                    data=json.dumps(payload)
+                )
                 if resp.status_code == 200:
                     data = resp.json()
-                    # Извлекаем ответ из data
                     content = data["choices"][0]["message"].get("content", "")
                     results.append(content)
                 else:
@@ -110,10 +157,8 @@ def process_file(
             except Exception as e:
                 results.append(f"Exception: {str(e)}")
 
-        # Обновляем прогресс
         progress_bar.progress(end_idx / total_rows)
 
-    # Готовим итоги
     df_out = df.copy()
     df_out["response"] = results
 
@@ -125,9 +170,12 @@ def process_file(
 
 st.title("🧠 Novita AI Batch Processing")
 
+# Две колонки
 left_col, right_col = st.columns([1,1])
 
-# Левая колонка: список моделей
+########################################
+# Левая колонка: Список моделей
+########################################
 with left_col:
     st.markdown("#### Модели")
     st.caption("Список моделей загружается из API Novita AI")
@@ -148,9 +196,14 @@ with left_col:
     if len(st.session_state["model_list"]) > 0:
         selected_model = st.selectbox("Выберите модель", st.session_state["model_list"])
     else:
-        selected_model = st.selectbox("Выберите модель", ["meta-llama/llama-3.1-8b-instruct", "Nous-Hermes-2-Mixtral-8x7B-DPO"])
+        selected_model = st.selectbox(
+            "Выберите модель",
+            ["meta-llama/llama-3.1-8b-instruct", "Nous-Hermes-2-Mixtral-8x7B-DPO"]
+        )
 
-# Правая колонка: настройки модели
+########################################
+# Правая колонка: Настройки генерации
+########################################
 with right_col:
     st.markdown("#### Параметры генерации")
     response_format = st.selectbox("Response Format", ["text", "csv"])
@@ -165,63 +218,101 @@ with right_col:
     frequency_penalty = st.slider("frequency_penalty", min_value=0.0, max_value=2.0, value=0.0, step=0.01)
     repetition_penalty = st.slider("repetition_penalty", min_value=0.0, max_value=2.0, value=1.0, step=0.01)
 
+# Разделительная линия
 st.markdown("---")
-st.subheader("Обработка данных")
 
-user_prompt = st.text_area("Пользовательский промпт")
+########################################
+# Блок одиночного промпта (без файла)
+########################################
+st.subheader("Одиночный промпт")
+user_prompt_single = st.text_area("Введите ваш промпт для одиночной генерации")
 
+if st.button("Отправить одиночный промпт"):
+    if not api_key:
+        st.error("API Key не указан!")
+    else:
+        st.info("Отправляем запрос...")
+        single_result = send_single_prompt(
+            api_key=api_key,
+            model=selected_model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt_single,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            min_p=min_p,
+            top_k=top_k,
+            presence_penalty=presence_penalty,
+            frequency_penalty=frequency_penalty,
+            repetition_penalty=repetition_penalty
+        )
+        st.success("Результат получен!")
+        st.text_area("Ответ от модели", value=single_result, height=200)
+
+########################################
+# Блок обработки файла
+########################################
+st.markdown("---")
+st.subheader("Обработка данных из файла")
+
+user_prompt = st.text_area("Пользовательский промпт (для каждой строки)")
 uploaded_file = st.file_uploader("Прикрепить файл (CSV или TXT, до 100000 строк)", type=["csv", "txt"])
 
+df = None
 if uploaded_file is not None:
     file_extension = uploaded_file.name.split(".")[-1]
     try:
         if file_extension == "csv":
-            # читаем CSV обычным способом
+            # Обычное чтение CSV
             df = pd.read_csv(uploaded_file)
         else:
-            # читаем TXT с помощью engine='python' и delimiter='\n'
-            df = pd.read_csv(uploaded_file, delimiter="\n", header=None, engine='python')
+            # Альтернативное чтение TXT
+            # Вместо delimiter='\n' используем splitlines(), чтобы избежать ошибок
+            content = uploaded_file.read().decode("utf-8")
+            lines = content.splitlines()
+            df = pd.DataFrame(lines)
+
         st.write("### Предпросмотр файла")
         st.dataframe(df.head())
     except Exception as e:
         st.error(f"Ошибка при чтении файла: {e}")
         df = None
 
-    if df is not None:
-        if st.button("Запустить"):
-            if not api_key:
-                st.error("API Key не указан!")
+if df is not None:
+    if st.button("Запустить обработку файла"):
+        if not api_key:
+            st.error("API Key не указан!")
+        else:
+            row_count = len(df)
+            if row_count > 100000:
+                st.warning(f"Файл содержит {row_count} строк. Это превышает рекомендованный лимит в 100000.")
+            st.info("Начинаем обработку, пожалуйста подождите...")
+
+            df_out = process_file(
+                api_key=api_key,
+                model=selected_model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                df=df,
+                response_format=response_format,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                min_p=min_p,
+                top_k=top_k,
+                presence_penalty=presence_penalty,
+                frequency_penalty=frequency_penalty,
+                repetition_penalty=repetition_penalty,
+            )
+
+            st.success("Обработка завершена!")
+
+            # Вывод результата
+            if response_format == "text":
+                st.text_area("Результат", value="\n".join(df_out["response"].astype(str)), height=300)
             else:
-                row_count = len(df)
-                if row_count > 100000:
-                    st.warning(f"Файл содержит {row_count} строк. Это превышает рекомендованный лимит в 100000.")
-                st.info("Начинаем обработку, пожалуйста подождите...")
+                csv_out = df_out.to_csv(index=False).encode("utf-8")
+                st.download_button("Скачать результат (CSV)", data=csv_out, file_name="result.csv", mime="text/csv")
 
-                df_out = process_file(
-                    api_key=api_key,
-                    model=selected_model,
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    df=df,
-                    response_format=response_format,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    top_p=top_p,
-                    min_p=min_p,
-                    top_k=top_k,
-                    presence_penalty=presence_penalty,
-                    frequency_penalty=frequency_penalty,
-                    repetition_penalty=repetition_penalty,
-                )
-
-                st.success("Обработка завершена!")
-
-                # Вывод результата
-                if response_format == "text":
-                    st.text_area("Результат", value="\n".join(df_out["response"].astype(str)), height=300)
-                else:
-                    csv_out = df_out.to_csv(index=False).encode("utf-8")
-                    st.download_button("Скачать результат (CSV)", data=csv_out, file_name="result.csv", mime="text/csv")
-
-                st.write("### Логи")
-                st.write("Обработка завершена, строк обработано:", len(df_out))
+            st.write("### Логи")
+            st.write("Обработка завершена, строк обработано:", len(df_out))
