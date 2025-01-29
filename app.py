@@ -445,3 +445,4 @@ if df is not None:
 
             st.write("### Логи")
             st.write("Обработка завершена, строк обработано:", len(df_out))
+
