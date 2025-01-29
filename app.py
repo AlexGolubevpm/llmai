@@ -21,11 +21,34 @@ DEFAULT_API_KEY = "sk_MyidbhnT9jXzw-YDymhijjY8NF15O0Qy7C36etNTAxE"
 # Максимальное количество повторных попыток при 429 (Rate Limit)
 MAX_RETRIES = 3
 
+# Словарь доступных языков
+LANGUAGES = {
+    "Original": "Keep original language",
+    "English": "Translate and rewrite in English",
+    "Japanese": "Translate and rewrite in Japanese (日本語)",
+    "Chinese": "Translate and rewrite in Chinese (中文)",
+    "Hindi": "Translate and rewrite in Hindi (हिन्दी)"
+}
+
 st.set_page_config(page_title="Novita AI Batch Processor", layout="wide")
 
 #######################################
 # 2) Вспомогательные ФУНКЦИИ
 #######################################
+
+def get_language_system_prompt(language: str, base_prompt: str) -> str:
+    """Добавляем инструкции по языку к системному промпту"""
+    if language == "Original":
+        return base_prompt
+    
+    language_instructions = {
+        "English": "Translate and rewrite the following text in English. Maintain the original meaning and style, but make it sound natural in English.",
+        "Japanese": "Translate and rewrite the following text in Japanese (日本語). Ensure it sounds natural and culturally appropriate in Japanese.",
+        "Chinese": "Translate and rewrite the following text in Chinese (中文). Ensure it sounds natural and culturally appropriate in Chinese.",
+        "Hindi": "Translate and rewrite the following text in Hindi (हिन्दी). Ensure it sounds natural and culturally appropriate in Hindi."
+    }
+    
+    return f"{base_prompt}\n\n{language_instructions.get(language, '')}"
 
 def custom_postprocess_text(text: str) -> str:
     """
@@ -35,7 +58,6 @@ def custom_postprocess_text(text: str) -> str:
     pattern_start = re.compile(r'^(fucking\s*)', re.IGNORECASE)
     text = pattern_start.sub('', text)
     return text
-
 
 def get_model_list(api_key: str):
     """Загружаем список доступных моделей через эндпоинт Novita AI"""
@@ -55,7 +77,6 @@ def get_model_list(api_key: str):
     except Exception as e:
         st.error(f"Ошибка при получении списка моделей: {e}")
         return []
-
 
 def chat_completion_request(
     api_key: str,
@@ -109,7 +130,6 @@ def chat_completion_request(
     # Если все попытки исчерпаны
     return "Ошибка: Превышено число попыток при 429 RATE_LIMIT."
 
-
 def process_single_row(
     api_key: str,
     model: str,
@@ -148,7 +168,6 @@ def process_single_row(
     final_response = custom_postprocess_text(raw_response)
     return final_response
 
-
 def process_file(
     api_key: str,
     model: str,
@@ -179,7 +198,6 @@ def process_file(
     start_time = time.time()
     lines_processed = 0
 
-    # === Исправленный блок с нормальными отступами: ===
     for start_idx in range(0, total_rows, chunk_size):
         chunk_start_time = time.time()
         end_idx = min(start_idx + chunk_size, total_rows)
@@ -234,8 +252,6 @@ def process_file(
                     time_text = f"~{est_time_left_min:.1f} мин."
                 time_placeholder.info(f"Примерное оставшееся время: {time_text}")
 
-    # === Конец цикла ===
-
     # Создаем копию df с новым столбцом
     df_out = df.copy()
     df_out["rewrite"] = results
@@ -245,24 +261,30 @@ def process_file(
 
     return df_out
 
-
 #######################################
 # 4) ИНТЕРФЕЙС
 #######################################
 
 st.title("🧠 Novita AI Batch Processing")
 
-# Две колонки
-left_col, right_col = st.columns([1, 1])
+# Три колонки для лучшей организации
+left_col, middle_col, right_col = st.columns([1, 1, 1])
 
 ########################################
-# Левая колонка: Список моделей
+# Левая колонка: Список моделей и язык
 ########################################
 with left_col:
-    st.markdown("#### Модели")
+    st.markdown("#### Модели и язык")
     st.caption("Список моделей загружается из API Novita AI")
 
     api_key = st.text_input("API Key", value=DEFAULT_API_KEY, type="password")
+    
+    # Добавляем выбор языка
+    target_language = st.selectbox(
+        "Target Language",
+        options=list(LANGUAGES.keys()),
+        format_func=lambda x: LANGUAGES[x]
+    )
 
     if st.button("Обновить список моделей"):
         if not api_key:
@@ -284,13 +306,18 @@ with left_col:
         )
 
 ########################################
-# Правая колонка: Настройки генерации
+# Средняя колонка: Настройки генерации
 ########################################
-with right_col:
+with middle_col:
     st.markdown("#### Параметры генерации")
-    output_format = st.selectbox("Output Format", ["csv", "txt"])  # CSV или TXT
+    output_format = st.selectbox("Output Format", ["csv", "txt"])
     system_prompt = st.text_area("System Prompt", value="Act like you are a helpful assistant.")
 
+########################################
+# Правая колонка: Дополнительные параметры
+########################################
+with right_col:
+    st.markdown("#### Дополнительные параметры")
     max_tokens = st.slider("max_tokens", min_value=0, max_value=64000, value=512, step=1)
     temperature = st.slider("temperature", min_value=0.0, max_value=2.0, value=0.7, step=0.01)
     top_p = st.slider("top_p", min_value=0.0, max_value=1.0, value=1.0, step=0.01)
@@ -304,7 +331,7 @@ with right_col:
 st.markdown("---")
 
 ########################################
-# Поле одиночного промпта (не обязательно)
+# Поле одиночного промпта
 ########################################
 st.subheader("Одиночный промпт")
 user_prompt_single = st.text_area("Введите ваш промпт для одиночной генерации")
@@ -314,7 +341,7 @@ if st.button("Отправить одиночный промпт"):
         st.error("API Key не указан!")
     else:
         from_text = [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": get_language_system_prompt(target_language, system_prompt)},
             {"role": "user", "content": user_prompt_single}
         ]
         st.info("Отправляем запрос...")
@@ -331,99 +358,6 @@ if st.button("Отправить одиночный промпт"):
             frequency_penalty=frequency_penalty,
             repetition_penalty=repetition_penalty
         )
-        # Можем вызвать custom_postprocess_text, если нужно
         final_response = custom_postprocess_text(raw_response)
         st.success("Результат получен!")
-        st.text_area("Ответ от модели", value=final_response, height=200)
-
-# Разделительная линия
-st.markdown("---")
-
-########################################
-# Блок обработки файла
-########################################
-st.subheader("Обработка данных из файла")
-
-user_prompt = st.text_area("Пользовательский промпт (дополнительно к заголовку)")
-
-st.markdown("##### Настройка парсинга TXT/CSV")
-delimiter_input = st.text_input("Разделитель (delimiter)", value="|")
-column_input = st.text_input("Названия колонок (через запятую)", value="id,title")
-
-uploaded_file = st.file_uploader("Прикрепить файл (CSV или TXT, до 100000 строк)", type=["csv", "txt"])
-
-df = None
-if uploaded_file is not None:
-    file_extension = uploaded_file.name.split(".")[-1]
-    try:
-        if file_extension == "csv":
-            df = pd.read_csv(uploaded_file)
-        else:
-            content = uploaded_file.read().decode("utf-8")
-            lines = content.splitlines()
-
-            columns = [c.strip() for c in column_input.split(",")]
-
-            parsed_lines = []
-            for line in lines:
-                splitted = line.split(delimiter_input, maxsplit=len(columns) - 1)
-                parsed_lines.append(splitted)
-
-            df = pd.DataFrame(parsed_lines, columns=columns)
-
-        st.write("### Предпросмотр файла")
-        st.dataframe(df.head())
-    except Exception as e:
-        st.error(f"Ошибка при чтении файла: {e}")
-        df = None
-
-if df is not None:
-    cols = df.columns.tolist()
-    title_col = st.selectbox("Какая колонка является заголовком?", cols)
-
-    # Ползунок для выбора кол-ва потоков
-    max_workers = st.slider("Потоки (max_workers)", min_value=1, max_value=20, value=5)
-
-    if st.button("Запустить обработку файла"):
-        if not api_key:
-            st.error("API Key не указан!")
-        else:
-            row_count = len(df)
-            if row_count > 100000:
-                st.warning(f"Файл содержит {row_count} строк. Это превышает рекомендованный лимит в 100000.")
-            st.info("Начинаем обработку, пожалуйста подождите...")
-
-            df_out = process_file(
-                api_key=api_key,
-                model=selected_model,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                df=df,
-                title_col=title_col,
-                response_format="csv",  # уже не используем, но пусть есть
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                min_p=min_p,
-                top_k=top_k,
-                presence_penalty=presence_penalty,
-                frequency_penalty=frequency_penalty,
-                repetition_penalty=repetition_penalty,
-                chunk_size=10,  # фиксируем 10 строк в чанке
-                max_workers=max_workers
-            )
-
-            st.success("Обработка завершена!")
-
-            # Скачивание
-            if output_format == "csv":
-                csv_out = df_out.to_csv(index=False).encode("utf-8")
-                st.download_button("Скачать результат (CSV)", data=csv_out, file_name="result.csv", mime="text/csv")
-            else:
-                txt_out = df_out.to_csv(index=False, sep="|", header=False).encode("utf-8")
-                st.download_button("Скачать результат (TXT)", data=txt_out, file_name="result.txt", mime="text/plain")
-
-            st.write("### Логи")
-            st.write("Обработка завершена, строк обработано:", len(df_out))
-
-
+        st.text_area("Ответ от модели", value=final_response, height
