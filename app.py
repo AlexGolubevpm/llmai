@@ -186,7 +186,7 @@ def process_file(
     start_time = time.time()
     lines_processed = 0
 
-    for start_idx in range(0, total_rows, chunk_size):
+     for start_idx in range(0, total_rows, chunk_size):
     chunk_start_time = time.time()
     end_idx = min(start_idx + chunk_size, total_rows)
 
