@@ -42,12 +42,20 @@ def get_model_list(api_key: str):
         return []
 
 
-def chat_completion_request(api_key: str, messages: list, model: str,
-                            max_tokens: int, temperature: float, top_p: float,
-                            min_p: float, top_k: int,
-                            presence_penalty: float, frequency_penalty: float,
-                            repetition_penalty: float):
-    """Функция для отправки chat-комплишена со списком сообщений."""
+def chat_completion_request(
+    api_key: str,
+    messages: list,
+    model: str,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    min_p: float,
+    top_k: int,
+    presence_penalty: float,
+    frequency_penalty: float,
+    repetition_penalty: float
+):
+    """Функция для синхронного (не-стримингового) chat-комплишена."""
     payload = {
         "model": model,
         "messages": messages,
@@ -77,6 +85,60 @@ def chat_completion_request(api_key: str, messages: list, model: str,
         return f"Исключение: {e}"
 
 
+def chat_completion_request_stream(
+    api_key: str,
+    messages: list,
+    model: str,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    min_p: float,
+    top_k: int,
+    presence_penalty: float,
+    frequency_penalty: float,
+    repetition_penalty: float
+):
+    """Пример стриминг-запроса (stream=True). Возвращает генератор чанков текста."""
+
+    payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "top_p": top_p,
+        "top_k": top_k,
+        "presence_penalty": presence_penalty,
+        "frequency_penalty": frequency_penalty,
+        "repetition_penalty": repetition_penalty,
+        "min_p": min_p,
+        "stream": True  # Включаем стриминг
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
+
+    # Используем stream=True, чтобы считывать чанки построчно
+    with requests.post(CHAT_COMPLETIONS_ENDPOINT, headers=headers, json=payload, stream=True) as resp:
+        if resp.status_code != 200:
+            yield f"Ошибка: {resp.status_code} - {resp.text}"
+            return
+        for chunk in resp.iter_lines(decode_unicode=True):
+            if chunk:
+                if chunk.startswith("data: "):
+                    data_str = chunk[len("data: ") :]
+                    if data_str.strip() == "[DONE]":
+                        # Завершение стрима
+                        break
+                    try:
+                        chunk_json = json.loads(data_str)
+                        delta_content = chunk_json["choices"][0]["delta"].get("content", "")
+                        yield delta_content
+                    except Exception as e:
+                        yield f"[JSON parse error: {e}]"
+
+
 def send_single_prompt(
     api_key: str,
     model: str,
@@ -91,16 +153,24 @@ def send_single_prompt(
     frequency_penalty: float,
     repetition_penalty: float
 ):
-    """Отправляет одиночный промпт без файла."""
+    """Отправляет одиночный промпт без файла (нестриминговый)."""
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt}
     ]
-    return chat_completion_request(api_key, messages, model,
-                                  max_tokens, temperature, top_p,
-                                  min_p, top_k,
-                                  presence_penalty, frequency_penalty,
-                                  repetition_penalty)
+    return chat_completion_request(
+        api_key,
+        messages,
+        model,
+        max_tokens,
+        temperature,
+        top_p,
+        min_p,
+        top_k,
+        presence_penalty,
+        frequency_penalty,
+        repetition_penalty
+    )
 
 
 def process_file(
@@ -144,11 +214,19 @@ def process_file(
                 {"role": "user", "content": f"{user_prompt}\n{row_text}"}
             ]
 
-            content = chat_completion_request(api_key, messages, model,
-                                             max_tokens, temperature, top_p,
-                                             min_p, top_k,
-                                             presence_penalty, frequency_penalty,
-                                             repetition_penalty)
+            content = chat_completion_request(
+                api_key,
+                messages,
+                model,
+                max_tokens,
+                temperature,
+                top_p,
+                min_p,
+                top_k,
+                presence_penalty,
+                frequency_penalty,
+                repetition_penalty
+            )
             results.append(content)
 
         lines_processed += chunk_size_actual
@@ -244,7 +322,7 @@ with right_col:
 st.markdown("---")
 
 ########################################
-# Блок одиночного промпта (без файла)
+# Блок одиночного промпта (без файла, обычный)
 ########################################
 st.subheader("Одиночный промпт")
 user_prompt_single = st.text_area("Введите ваш промпт для одиночной генерации")
@@ -275,6 +353,47 @@ if st.button("Отправить одиночный промпт"):
 st.markdown("---")
 
 ########################################
+# Блок одиночного промпта (stream)
+########################################
+st.subheader("Одиночный промпт (stream)")
+user_prompt_single_stream = st.text_area("Введите ваш промпт (stream)")
+
+if st.button("Отправить одиночный промпт (stream)"):
+    if not api_key:
+        st.error("API Key не указан!")
+    else:
+        st.info("Стриминг начался...")
+        streamed_text_placeholder = st.empty()
+        accumulated_text = ""
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt_single_stream}
+        ]
+
+        # Итерируем по чанкам
+        for partial_text in chat_completion_request_stream(
+            api_key=api_key,
+            messages=messages,
+            model=selected_model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            min_p=min_p,
+            top_k=top_k,
+            presence_penalty=presence_penalty,
+            frequency_penalty=frequency_penalty,
+            repetition_penalty=repetition_penalty
+        ):
+            accumulated_text += partial_text
+            streamed_text_placeholder.text(accumulated_text)
+
+        st.success("Стриминг завершён!")
+
+# Разделительная линия
+st.markdown("---")
+
+########################################
 # Блок чата с историей (session_state)
 ########################################
 st.subheader("Чат с историей (Session)")
@@ -293,7 +412,7 @@ if st.button("Отправить в чат"):
             st.session_state["chat_history"].append({"role": "user", "content": chat_input})
             st.info("Запрос отправляется...")
 
-            # Отправляем ВСЮ историю на API
+            # Отправляем ВСЮ историю на API (нестриминговый)
             assistant_reply = chat_completion_request(
                 api_key=api_key,
                 messages=st.session_state["chat_history"],
@@ -389,4 +508,3 @@ if df is not None:
 
             st.write("### Логи")
             st.write("Обработка завершена, строк обработано:", len(df_out))
-
