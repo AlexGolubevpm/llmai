@@ -128,13 +128,14 @@ def process_single_row(
     top_k: int,
     presence_penalty: float,
     frequency_penalty: float,
-    repetition_penalty: float
+    repetition_penalty: float,
+    selected_language: str
 ):
     """Функция-обёртка для параллельного вызова."""
     messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"{user_prompt}\n{row_text}"}
-    ]
+    {"role": "system", "content": system_prompt},
+    {"role": "user", "content": f"Write the title in {selected_language}: {row_text}"}
+]
     raw_response = chat_completion_request(
         api_key,
         messages,
@@ -160,7 +161,7 @@ def process_file(
     system_prompt: str,
     user_prompt: str,
     df: pd.DataFrame,
-    title_col: str,  # Название колонки, которую надо переписать
+    title_col: str,
     response_format: str,
     max_tokens: int,
     temperature: float,
@@ -170,8 +171,9 @@ def process_file(
     presence_penalty: float,
     frequency_penalty: float,
     repetition_penalty: float,
-    chunk_size: int = 10,  # фиксируем 10 строк в чанке
-    max_workers: int = 5  # Количество потоков
+    chunk_size: int = 10,
+    max_workers: int = 5,
+    selected_language: str = "en"
 ):
     """Параллельно обрабатываем загруженный файл построчно (или чанками)."""
 
@@ -198,21 +200,22 @@ def process_file(
         for i, row_idx in enumerate(chunk_indices):
             row_text = str(df.loc[row_idx, title_col])
             future = executor.submit(
-                process_single_row,
-                api_key,
-                model,
-                system_prompt,
-                user_prompt,
-                row_text,
-                max_tokens,
-                temperature,
-                top_p,
-                min_p,
-                top_k,
-                presence_penalty,
-                frequency_penalty,
-                repetition_penalty
-            )
+    process_single_row,
+    api_key,
+    model,
+    system_prompt,
+    user_prompt,
+    row_text,
+    max_tokens,
+    temperature,
+    top_p,
+    min_p,
+    top_k,
+    presence_penalty,
+    frequency_penalty,
+    repetition_penalty,
+    selected_language
+)
             future_to_i[future] = i
 
         for future in concurrent.futures.as_completed(future_to_i):
@@ -294,6 +297,16 @@ with left_col:
 ########################################
 with right_col:
     st.markdown("#### Параметры генерации")
+
+# Выбор языка для генерации
+language_options = {
+    "English": "en",
+    "Japanese": "ja",
+    "Chinese": "zh",
+    "Hindi": "hi"
+}
+selected_language = st.selectbox("Выберите язык генерации", list(language_options.keys()))
+selected_language_code = language_options[selected_language]
     output_format = st.selectbox("Output Format", ["csv", "txt"])  # CSV или TXT
     system_prompt = st.text_area("System Prompt", value="Act like you are a helpful assistant.")
 
@@ -432,6 +445,4 @@ if df is not None:
 
             st.write("### Логи")
             st.write("Обработка завершена, строк обработано:", len(df_out))
-
-
 
