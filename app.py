@@ -22,12 +22,19 @@ DEFAULT_API_KEY = "sk_MyidbhnT9jXzw-YDymhijjY8NF15O0Qy7C36etNTAxE"
 MAX_RETRIES = 3
 
 # Словарь доступных языков
-LANGUAGES = {
-    "Original": "Keep original language",
-    "English": "Translate and rewrite in English",
-    "Japanese": "Translate and rewrite in Japanese (日本語)",
-    "Chinese": "Translate and rewrite in Chinese (中文)",
-    "Hindi": "Translate and rewrite in Hindi (हिन्दी)"
+SOURCE_LANGUAGES = {
+    "Auto": "Auto-detect language",
+    "English": "English source text",
+    "Japanese": "Japanese source text (日本語)",
+    "Chinese": "Chinese source text (中文)",
+    "Hindi": "Hindi source text (हिन्दी)"
+}
+
+TARGET_LANGUAGES = {
+    "English": "Translate to English",
+    "Japanese": "Translate to Japanese (日本語)", 
+    "Chinese": "Translate to Chinese (中文)",
+    "Hindi": "Translate to Hindi (हिन्दी)"
 }
 
 st.set_page_config(page_title="Novita AI Batch Processor", layout="wide")
@@ -36,46 +43,47 @@ st.set_page_config(page_title="Novita AI Batch Processor", layout="wide")
 # 2) Вспомогательные ФУНКЦИИ
 #######################################
 
-def get_language_system_prompt(language: str, base_prompt: str) -> str:
-    if language == "Original":
+def get_language_system_prompt(source_lang: str, target_lang: str, base_prompt: str) -> str:
+    """
+    Generate system prompt based on source and target languages
+    """
+    if source_lang == target_lang:
         return base_prompt
     
     language_instructions = {
-        "English": """
-            Translate the following text to English. If the text is already in English, just return it as is.
+        ("English", "Japanese"): """
+            Translate the following English text to Japanese.
             Rules:
             - Keep names unchanged
-            - Preserve any technical terms
-            - If text is partially in English, translate only non-English parts
+            - Preserve technical terms
             - Maintain the original style and tone
+            - Ensure natural Japanese expression
         """,
-        "Japanese": """
-            以下のテキストを日本語に翻訳してください。
-            ルール：
-            - 固有名詞は変更しない
-            - 専門用語は保持する
-            - 部分的に日本語の場合は、非日本語部分のみを翻訳
-            - 元のスタイルとトーンを維持する
+        ("English", "Chinese"): """
+            Translate the following English text to Chinese.
+            Rules:
+            - Keep names unchanged
+            - Preserve technical terms
+            - Maintain the original style and tone
+            - Use appropriate Chinese characters
         """,
-        "Chinese": """
-            将以下文本翻译成中文。
-            规则：
-            - 保持名称不变
-            - 保留专业术语
-            - 如果文本部分已经是中文，只翻译非中文部分
-            - 保持原有的风格和语气
+        ("English", "Hindi"): """
+            Translate the following English text to Hindi.
+            Rules:
+            - Keep names unchanged
+            - Preserve technical terms
+            - Maintain the original style and tone
+            - Use proper Hindi grammar
         """,
-        "Hindi": """
-            निम्नलिखित टेक्स्ट को हिंदी में अनुवाद करें।
-            नियम:
-            - नाम अपरिवर्तित रखें
-            - तकनीकी शब्दों को संरक्षित करें
-            - यदि टेक्स्ट आंशिक रूप से हिंदी में है, तो केवल गैर-हिंदी भागों का अनुवाद करें
-            - मूल शैली और टोन बनाए रखें
-        """
+        # Add other language pair combinations here
     }
     
-    return f"{base_prompt}\n\n{language_instructions.get(language, '')}"
+    # Get instructions for the language pair, or generate generic instructions
+    pair_key = (source_lang, target_lang)
+    if pair_key in language_instructions:
+        return f"{base_prompt}\n\n{language_instructions[pair_key]}"
+    else:
+        return f"{base_prompt}\n\nTranslate from {source_lang} to {target_lang}, keeping names and technical terms unchanged."
 
 def custom_postprocess_text(text: str) -> str:
     """
@@ -307,11 +315,17 @@ with left_col:
     api_key = st.text_input("API Key", value=DEFAULT_API_KEY, type="password")
     
     # Добавляем выбор языка
-    target_language = st.selectbox(
-        "Target Language",
-        options=list(LANGUAGES.keys()),
-        format_func=lambda x: LANGUAGES[x]
-    )
+    source_language = st.selectbox(
+    "Source Language",
+    options=list(SOURCE_LANGUAGES.keys()),
+    format_func=lambda x: SOURCE_LANGUAGES[x]
+)
+
+target_language = st.selectbox(
+    "Target Language",
+    options=list(TARGET_LANGUAGES.keys()),
+    format_func=lambda x: TARGET_LANGUAGES[x]
+)
 
     if st.button("Обновить список моделей"):
         if not api_key:
@@ -449,7 +463,7 @@ if df is not None:
             df_out = process_file(
                 api_key=api_key,
                 model=selected_model,
-                system_prompt=get_language_system_prompt(target_language, system_prompt),
+                system_prompt=get_language_system_prompt(source_language, target_language, system_prompt),
                 user_prompt=user_prompt,
                 df=df,
                 title_col=title_col,
