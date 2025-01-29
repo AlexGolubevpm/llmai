@@ -335,12 +335,12 @@ if st.button("Обновить список моделей"):
             model_list = get_model_list(api_key)
             st.session_state["model_list"] = model_list
 
-    if "model_list" not in st.session_state:
+if "model_list" not in st.session_state:
         st.session_state["model_list"] = []
 
-    if len(st.session_state["model_list"]) > 0:
+if len(st.session_state["model_list"]) > 0:
         selected_model = st.selectbox("Выберите модель", st.session_state["model_list"])
-    else:
+else:
         selected_model = st.selectbox(
             "Выберите модель",
             ["meta-llama/llama-3.1-8b-instruct", "Nous-Hermes-2-Mixtral-8x7B-DPO"]
