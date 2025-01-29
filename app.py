@@ -208,7 +208,7 @@ def process_file(
         chunk_size_actual = end_idx - start_idx
 
         for idx, row in chunk.iterrows():
-            row_text = str(row[0])
+            row_text = str(row['title'])
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"{user_prompt}\n{row_text}"}
@@ -353,96 +353,10 @@ if st.button("Отправить одиночный промпт"):
 st.markdown("---")
 
 ########################################
-# Блок одиночного промпта (stream)
-########################################
-st.subheader("Одиночный промпт (stream)")
-user_prompt_single_stream = st.text_area("Введите ваш промпт (stream)")
 
-if st.button("Отправить одиночный промпт (stream)"):
-    if not api_key:
-        st.error("API Key не указан!")
-    else:
-        st.info("Стриминг начался...")
-        streamed_text_placeholder = st.empty()
-        accumulated_text = ""
-
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt_single_stream}
-        ]
-
-        # Итерируем по чанкам
-        for partial_text in chat_completion_request_stream(
-            api_key=api_key,
-            messages=messages,
-            model=selected_model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            min_p=min_p,
-            top_k=top_k,
-            presence_penalty=presence_penalty,
-            frequency_penalty=frequency_penalty,
-            repetition_penalty=repetition_penalty
-        ):
-            accumulated_text += partial_text
-            streamed_text_placeholder.text(accumulated_text)
-
-        st.success("Стриминг завершён!")
-
-# Разделительная линия
-st.markdown("---")
 
 ########################################
-# Блок чата с историей (session_state)
-########################################
-st.subheader("Чат с историей (Session)")
-init_chat_history()
 
-chat_input = st.text_input("Ваше сообщение")
-
-if st.button("Отправить в чат"):
-    if not api_key:
-        st.error("API Key не указан!")
-    else:
-        if chat_input.strip() == "":
-            st.warning("Сообщение пустое!")
-        else:
-            # Добавляем новое сообщение от пользователя
-            st.session_state["chat_history"].append({"role": "user", "content": chat_input})
-            st.info("Запрос отправляется...")
-
-            # Отправляем ВСЮ историю на API (нестриминговый)
-            assistant_reply = chat_completion_request(
-                api_key=api_key,
-                messages=st.session_state["chat_history"],
-                model=selected_model,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                min_p=min_p,
-                top_k=top_k,
-                presence_penalty=presence_penalty,
-                frequency_penalty=frequency_penalty,
-                repetition_penalty=repetition_penalty
-            )
-
-            # Добавляем ответ ассистента
-            st.session_state["chat_history"].append({"role": "assistant", "content": assistant_reply})
-            st.success("Ответ получен!")
-
-# Отображаем историю чата
-for msg in st.session_state["chat_history"]:
-    if msg["role"] == "system":
-        st.write(f"**System**: {msg['content']}")
-    elif msg["role"] == "user":
-        st.write(f"**User**: {msg['content']}")
-    else:
-        st.write(f"**Assistant**: {msg['content']}")
-
-
-# Разделительная линия
-st.markdown("---")
 
 ########################################
 # Блок обработки файла
