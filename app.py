@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import json
 import pandas as pd
+import time
 
 #######################################
 # 1) НАСТРОЙКИ ПРИЛОЖЕНИЯ
@@ -108,16 +109,25 @@ def process_file(
     repetition_penalty: float,
     chunk_size: int = 5000
 ):
-    """Обрабатываем загруженный файл построчно (или чанками)"""
+    """Обрабатываем загруженный файл построчно (или чанками) с отображением примерного оставшегося времени."""
 
+    # Элементы UI для прогресса
     progress_bar = st.progress(0)
+    time_placeholder = st.empty()  # для отображения оставшегося времени
+
     results = []
     total_rows = len(df)
 
+    # Засекаем время старта
+    start_time = time.time()
+    lines_processed = 0  # сколько строк уже обработано
+
     # Разбиваем на чанки, если нужно
     for start_idx in range(0, total_rows, chunk_size):
+        chunk_start_time = time.time()
         end_idx = min(start_idx + chunk_size, total_rows)
         chunk = df.iloc[start_idx:end_idx]
+        chunk_size_actual = end_idx - start_idx  # фактическое кол-во строк в чанке
 
         for idx, row in chunk.iterrows():
             row_text = str(row[0])
@@ -157,10 +167,32 @@ def process_file(
             except Exception as e:
                 results.append(f"Exception: {str(e)}")
 
-        progress_bar.progress(end_idx / total_rows)
+        lines_processed += chunk_size_actual
+        # Прогресс
+        progress_bar.progress(lines_processed / total_rows)
+
+        # Подсчет оставшегося времени
+        time_for_chunk = time.time() - chunk_start_time
+        # если chunk_size_actual == 0, чтобы избежать деления на ноль
+        if chunk_size_actual > 0:
+            time_per_line = time_for_chunk / chunk_size_actual
+            lines_left = total_rows - lines_processed
+            if time_per_line > 0:
+                est_time_left_sec = lines_left * time_per_line
+                # Форматируем строку
+                if est_time_left_sec < 60:
+                    time_text = f"~{est_time_left_sec:.1f} сек."
+                else:
+                    est_time_left_min = est_time_left_sec / 60.0
+                    time_text = f"~{est_time_left_min:.1f} мин."
+                time_placeholder.info(f"Примерное оставшееся время: {time_text}")
 
     df_out = df.copy()
     df_out["response"] = results
+
+    # итоги
+    elapsed = time.time() - start_time
+    time_placeholder.success(f"Обработка завершена за {elapsed:.1f} секунд.")
 
     return df_out
 
@@ -263,11 +295,8 @@ if uploaded_file is not None:
     file_extension = uploaded_file.name.split(".")[-1]
     try:
         if file_extension == "csv":
-            # Обычное чтение CSV
             df = pd.read_csv(uploaded_file)
         else:
-            # Альтернативное чтение TXT
-            # Вместо delimiter='\n' используем splitlines(), чтобы избежать ошибок
             content = uploaded_file.read().decode("utf-8")
             lines = content.splitlines()
             df = pd.DataFrame(lines)
