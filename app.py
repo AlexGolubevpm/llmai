@@ -18,7 +18,6 @@ CHAT_COMPLETIONS_ENDPOINT = f"{API_BASE_URL}/chat/completions"
 # Ключ по умолчанию (НЕБЕЗОПАСНО в реальном проде)
 DEFAULT_API_KEY = "sk_MyidbhnT9jXzw-YDymhijjY8NF15O0Qy7C36etNTAxE"
 
-
 # Максимальное количество повторных попыток при 429 (Rate Limit)
 MAX_RETRIES = 3
 
@@ -30,15 +29,11 @@ st.set_page_config(page_title="Novita AI Batch Processor", layout="wide")
 
 def custom_postprocess_text(text: str) -> str:
     """
-    
     Убираем 'fucking' (в любом регистре) только в начале строки.
-       Если в середине — оставляем.
+    Если в середине — оставляем.
     """
-    
-    # 2) Убираем 'fucking' только в начале строки
     pattern_start = re.compile(r'^(fucking\s*)', re.IGNORECASE)
     text = pattern_start.sub('', text)
-
     return text
 
 
@@ -128,14 +123,13 @@ def process_single_row(
     top_k: int,
     presence_penalty: float,
     frequency_penalty: float,
-    repetition_penalty: float,
-    selected_language: str
+    repetition_penalty: float
 ):
     """Функция-обёртка для параллельного вызова."""
     messages = [
-    {"role": "system", "content": system_prompt},
-    {"role": "user", "content": f"Write the title in {selected_language}: {row_text}"}
-]
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"{user_prompt}\n{row_text}"}
+    ]
     raw_response = chat_completion_request(
         api_key,
         messages,
@@ -161,7 +155,7 @@ def process_file(
     system_prompt: str,
     user_prompt: str,
     df: pd.DataFrame,
-    title_col: str,
+    title_col: str,  # Название колонки, которую надо переписать
     response_format: str,
     max_tokens: int,
     temperature: float,
@@ -171,9 +165,8 @@ def process_file(
     presence_penalty: float,
     frequency_penalty: float,
     repetition_penalty: float,
-    chunk_size: int = 10,
-    max_workers: int = 5,
-    selected_language: str = "en"
+    chunk_size: int = 10,  # фиксируем 10 строк в чанке
+    max_workers: int = 5  # Количество потоков
 ):
     """Параллельно обрабатываем загруженный файл построчно (или чанками)."""
 
@@ -186,74 +179,72 @@ def process_file(
     start_time = time.time()
     lines_processed = 0
 
+    # === Исправленный блок с нормальными отступами: ===
     for start_idx in range(0, total_rows, chunk_size):
-    chunk_start_time = time.time()
-    end_idx = min(start_idx + chunk_size, total_rows)
+        chunk_start_time = time.time()
+        end_idx = min(start_idx + chunk_size, total_rows)
 
-    # Берём индексы строк в этом чанке
-    chunk_indices = list(df.index[range(start_idx, end_idx)])
-    chunk_size_actual = len(chunk_indices)
-    chunk_results = [None] * chunk_size_actual
+        # Берём индексы строк в этом чанке
+        chunk_indices = list(df.index[range(start_idx, end_idx)])
+        chunk_size_actual = len(chunk_indices)
+        chunk_results = [None] * chunk_size_actual
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_i = {}
-        for i, row_idx in enumerate(chunk_indices):
-            row_text = str(df.loc[row_idx, title_col])
-            future = executor.submit(
-    process_single_row,
-    api_key,
-    model,
-    system_prompt,
-    user_prompt,
-    row_text,
-    max_tokens,
-    temperature,
-    top_p,
-    min_p,
-    top_k,
-    presence_penalty,
-    frequency_penalty,
-    repetition_penalty,
-    selected_language
-)
-            future_to_i[future] = i
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_i = {}
+            for i, row_idx in enumerate(chunk_indices):
+                row_text = str(df.loc[row_idx, title_col])
+                future = executor.submit(
+                    process_single_row,
+                    api_key,
+                    model,
+                    system_prompt,
+                    user_prompt,
+                    row_text,
+                    max_tokens,
+                    temperature,
+                    top_p,
+                    min_p,
+                    top_k,
+                    presence_penalty,
+                    frequency_penalty,
+                    repetition_penalty
+                )
+                future_to_i[future] = i
 
-        for future in concurrent.futures.as_completed(future_to_i):
-            i = future_to_i[future]
-            chunk_results[i] = future.result()
+            for future in concurrent.futures.as_completed(future_to_i):
+                i = future_to_i[future]
+                chunk_results[i] = future.result()
 
-    # Расширяем общий список результатов
-    results.extend(chunk_results)
+        # Расширяем общий список результатов
+        results.extend(chunk_results)
 
-    lines_processed += chunk_size_actual
-    progress_bar.progress(lines_processed / total_rows)
+        lines_processed += chunk_size_actual
+        progress_bar.progress(lines_processed / total_rows)
 
-    time_for_chunk = time.time() - chunk_start_time
-    if chunk_size_actual > 0:
-        time_per_line = time_for_chunk / chunk_size_actual
-        lines_left = total_rows - lines_processed
-        if time_per_line > 0:
-            est_time_left_sec = lines_left * time_per_line
-            if est_time_left_sec < 60:
-                time_text = f"~{est_time_left_sec:.1f} сек."
-            else:
-                est_time_left_min = est_time_left_sec / 60.0
-                time_text = f"~{est_time_left_min:.1f} мин."
-            time_placeholder.info(f"Примерное оставшееся время: {time_text}")
+        time_for_chunk = time.time() - chunk_start_time
+        if chunk_size_actual > 0:
+            time_per_line = time_for_chunk / chunk_size_actual
+            lines_left = total_rows - lines_processed
+            if time_per_line > 0:
+                est_time_left_sec = lines_left * time_per_line
+                if est_time_left_sec < 60:
+                    time_text = f"~{est_time_left_sec:.1f} сек."
+                else:
+                    est_time_left_min = est_time_left_sec / 60.0
+                    time_text = f"~{est_time_left_min:.1f} мин."
+                time_placeholder.info(f"Примерное оставшееся время: {time_text}")
 
-df_out = df.copy()
-df_out["rewrite"] = results
+    # === Конец цикла ===
 
-elapsed = time.time() - start_time
-time_placeholder.success(f"Обработка завершена за {elapsed:.1f} секунд.")
-
-return df_out
+    # Создаем копию df с новым столбцом
+    df_out = df.copy()
     df_out["rewrite"] = results
 
     elapsed = time.time() - start_time
     time_placeholder.success(f"Обработка завершена за {elapsed:.1f} секунд.")
 
     return df_out
+
 
 #######################################
 # 4) ИНТЕРФЕЙС
@@ -262,7 +253,7 @@ return df_out
 st.title("🧠 Novita AI Batch Processing")
 
 # Две колонки
-left_col, right_col = st.columns([1,1])
+left_col, right_col = st.columns([1, 1])
 
 ########################################
 # Левая колонка: Список моделей
@@ -297,16 +288,6 @@ with left_col:
 ########################################
 with right_col:
     st.markdown("#### Параметры генерации")
-
-# Выбор языка для генерации
-language_options = {
-    "English": "en",
-    "Japanese": "ja",
-    "Chinese": "zh",
-    "Hindi": "hi"
-}
-selected_language = st.selectbox("Выберите язык генерации", list(language_options.keys()))
-selected_language_code = language_options[selected_language]
     output_format = st.selectbox("Output Format", ["csv", "txt"])  # CSV или TXT
     system_prompt = st.text_area("System Prompt", value="Act like you are a helpful assistant.")
 
@@ -350,7 +331,8 @@ if st.button("Отправить одиночный промпт"):
             frequency_penalty=frequency_penalty,
             repetition_penalty=repetition_penalty
         )
-        final_response = postprocess_text(raw_response)
+        # Можем вызвать custom_postprocess_text, если нужно
+        final_response = custom_postprocess_text(raw_response)
         st.success("Результат получен!")
         st.text_area("Ответ от модели", value=final_response, height=200)
 
@@ -435,11 +417,9 @@ if df is not None:
 
             # Скачивание
             if output_format == "csv":
-                # Сохраняем как CSV
                 csv_out = df_out.to_csv(index=False).encode("utf-8")
                 st.download_button("Скачать результат (CSV)", data=csv_out, file_name="result.csv", mime="text/csv")
             else:
-                # Сохраняем как TXT (разделитель |, без заголовков)
                 txt_out = df_out.to_csv(index=False, sep="|", header=False).encode("utf-8")
                 st.download_button("Скачать результат (TXT)", data=txt_out, file_name="result.txt", mime="text/plain")
 
