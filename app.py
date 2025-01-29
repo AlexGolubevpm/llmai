@@ -37,15 +37,42 @@ st.set_page_config(page_title="Novita AI Batch Processor", layout="wide")
 #######################################
 
 def get_language_system_prompt(language: str, base_prompt: str) -> str:
-    """Добавляем инструкции по языку к системному промпту"""
     if language == "Original":
         return base_prompt
     
     language_instructions = {
-        "English": "Translate and rewrite the following text in English. Maintain the original meaning and style, but make it sound natural in English.",
-        "Japanese": "Translate and rewrite the following text in Japanese (日本語). Ensure it sounds natural and culturally appropriate in Japanese.",
-        "Chinese": "Translate and rewrite the following text in Chinese (中文). Ensure it sounds natural and culturally appropriate in Chinese.",
-        "Hindi": "Translate and rewrite the following text in Hindi (हिन्दी). Ensure it sounds natural and culturally appropriate in Hindi."
+        "English": """
+            Translate the following text to English. If the text is already in English, just return it as is.
+            Rules:
+            - Keep names unchanged
+            - Preserve any technical terms
+            - If text is partially in English, translate only non-English parts
+            - Maintain the original style and tone
+        """,
+        "Japanese": """
+            以下のテキストを日本語に翻訳してください。
+            ルール：
+            - 固有名詞は変更しない
+            - 専門用語は保持する
+            - 部分的に日本語の場合は、非日本語部分のみを翻訳
+            - 元のスタイルとトーンを維持する
+        """,
+        "Chinese": """
+            将以下文本翻译成中文。
+            规则：
+            - 保持名称不变
+            - 保留专业术语
+            - 如果文本部分已经是中文，只翻译非中文部分
+            - 保持原有的风格和语气
+        """,
+        "Hindi": """
+            निम्नलिखित टेक्स्ट को हिंदी में अनुवाद करें।
+            नियम:
+            - नाम अपरिवर्तित रखें
+            - तकनीकी शब्दों को संरक्षित करें
+            - यदि टेक्स्ट आंशिक रूप से हिंदी में है, तो केवल गैर-हिंदी भागों का अनुवाद करें
+            - मूल शैली और टोन बनाए रखें
+        """
     }
     
     return f"{base_prompt}\n\n{language_instructions.get(language, '')}"
