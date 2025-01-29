@@ -3,6 +3,7 @@ import requests
 import json
 import pandas as pd
 import time
+import concurrent.futures
 
 #######################################
 # 1) НАСТРОЙКИ ПРИЛОЖЕНИЯ
@@ -85,6 +86,41 @@ def chat_completion_request(
         return f"Исключение: {e}"
 
 
+def process_single_row(
+    api_key: str,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    row_text: str,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    min_p: float,
+    top_k: int,
+    presence_penalty: float,
+    frequency_penalty: float,
+    repetition_penalty: float
+):
+    """Функция-обёртка для параллельного вызова."""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"{user_prompt}\n{row_text}"}
+    ]
+    return chat_completion_request(
+        api_key,
+        messages,
+        model,
+        max_tokens,
+        temperature,
+        top_p,
+        min_p,
+        top_k,
+        presence_penalty,
+        frequency_penalty,
+        repetition_penalty
+    )
+
+
 def process_file(
     api_key: str,
     model: str,
@@ -101,9 +137,10 @@ def process_file(
     presence_penalty: float,
     frequency_penalty: float,
     repetition_penalty: float,
-    chunk_size: int = 10  # фиксируем 10 строк в чанке
+    chunk_size: int = 10,  # фиксируем 10 строк в чанке
+    max_workers: int = 5  # Количество потоков
 ):
-    """Обрабатываем загруженный файл построчно (или чанками) с отображением примерного оставшегося времени."""
+    """Параллельно обрабатываем загруженный файл построчно (или чанками)."""
 
     progress_bar = st.progress(0)
     time_placeholder = st.empty()  # для отображения оставшегося времени
@@ -120,28 +157,39 @@ def process_file(
         chunk = df.iloc[start_idx:end_idx]
         chunk_size_actual = end_idx - start_idx
 
-        for idx, row in chunk.iterrows():
-            # Берем колонку, которую пользователь выбрал как 'title'
-            row_text = str(row[title_col])
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"{user_prompt}\n{row_text}"}
-            ]
+        # Запускаем параллельно выполнение для каждой строки в чанке
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_idx = {}
+            for idx, row in chunk.iterrows():
+                row_text = str(row[title_col])
+                future = executor.submit(
+                    process_single_row,
+                    api_key,
+                    model,
+                    system_prompt,
+                    user_prompt,
+                    row_text,
+                    max_tokens,
+                    temperature,
+                    top_p,
+                    min_p,
+                    top_k,
+                    presence_penalty,
+                    frequency_penalty,
+                    repetition_penalty
+                )
+                future_to_idx[future] = idx
 
-            content = chat_completion_request(
-                api_key,
-                messages,
-                model,
-                max_tokens,
-                temperature,
-                top_p,
-                min_p,
-                top_k,
-                presence_penalty,
-                frequency_penalty,
-                repetition_penalty
-            )
-            results.append(content)
+            # Собираем результаты
+            chunk_results = [None] * chunk_size_actual
+            i = 0
+            for future in concurrent.futures.as_completed(future_to_idx):
+                res = future.result()
+                chunk_results[i] = res
+                i += 1
+
+        # Расширяем общий список результатов
+        results.extend(chunk_results)
 
         lines_processed += chunk_size_actual
         progress_bar.progress(lines_processed / total_rows)
@@ -160,7 +208,6 @@ def process_file(
                 time_placeholder.info(f"Примерное оставшееся время: {time_text}")
 
     df_out = df.copy()
-    # Переименуем столбец с результатом, чтобы было видно, что это переписанный title
     df_out["rewrite"] = results
 
     elapsed = time.time() - start_time
@@ -278,22 +325,16 @@ if uploaded_file is not None:
     file_extension = uploaded_file.name.split(".")[-1]
     try:
         if file_extension == "csv":
-            # Если человек хочет сам выбирать delimiter / колонки, можно учесть, иначе просто .read_csv
-            # тут в примере пусть csv читаем обычным способом:
             df = pd.read_csv(uploaded_file)
         else:
-            # Предполагаем TXT, парсим с учётом delimiter и колонок
             content = uploaded_file.read().decode("utf-8")
             lines = content.splitlines()
 
-            # Получаем список колонок
             columns = [c.strip() for c in column_input.split(",")]
 
-            # Разбиваем каждую строку по delimiter, сохраняя кол-во столбцов
             parsed_lines = []
             for line in lines:
                 splitted = line.split(delimiter_input, maxsplit=len(columns) - 1)
-                # если не совпадает кол-во столбцов, можно доп. обработку сделать
                 parsed_lines.append(splitted)
 
             df = pd.DataFrame(parsed_lines, columns=columns)
@@ -305,9 +346,11 @@ if uploaded_file is not None:
         df = None
 
 if df is not None:
-    # Выбор, какая колонка считается заголовком (title)
     cols = df.columns.tolist()
     title_col = st.selectbox("Какая колонка является заголовком?", cols)
+
+    # Ползунок для выбора кол-ва потоков
+    max_workers = st.slider("Потоки (max_workers)", min_value=1, max_value=20, value=5)
 
     if st.button("Запустить обработку файла"):
         if not api_key:
@@ -334,12 +377,12 @@ if df is not None:
                 presence_penalty=presence_penalty,
                 frequency_penalty=frequency_penalty,
                 repetition_penalty=repetition_penalty,
-                chunk_size=10  # фиксируем 10 строк в чанке
+                chunk_size=10,  # фиксируем 10 строк в чанке
+                max_workers=max_workers
             )
 
             st.success("Обработка завершена!")
 
-            # df_out["rewrite"] уже есть
             if response_format == "text":
                 st.text_area("Результат (колонка 'rewrite')", value="\n".join(df_out["rewrite"].astype(str)), height=300)
             else:
