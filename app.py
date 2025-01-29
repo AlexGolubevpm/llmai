@@ -4,6 +4,7 @@ import json
 import pandas as pd
 import time
 import concurrent.futures
+import re
 
 #######################################
 # 1) НАСТРОЙКИ ПРИЛОЖЕНИЯ
@@ -17,11 +18,29 @@ CHAT_COMPLETIONS_ENDPOINT = f"{API_BASE_URL}/chat/completions"
 # Ключ по умолчанию (НЕБЕЗОПАСНО в реальном проде)
 DEFAULT_API_KEY = "sk_MyidbhnT9jXzw-YDymhijjY8NF15O0Qy7C36etNTAxE"
 
+
+# Максимальное количество повторных попыток при 429 (Rate Limit)
+MAX_RETRIES = 3
+
 st.set_page_config(page_title="Novita AI Batch Processor", layout="wide")
 
 #######################################
-# 2) ФУНКЦИИ
+# 2) Вспомогательные ФУНКЦИИ
 #######################################
+
+def custom_postprocess_text(text: str) -> str:
+    """
+    
+    Убираем 'fucking' (в любом регистре) только в начале строки.
+       Если в середине — оставляем.
+    """
+    
+    # 2) Убираем 'fucking' только в начале строки
+    pattern_start = re.compile(r'^(fucking\s*)', re.IGNORECASE)
+    text = pattern_start.sub('', text)
+
+    return text
+
 
 def get_model_list(api_key: str):
     """Загружаем список доступных моделей через эндпоинт Novita AI"""
@@ -56,7 +75,7 @@ def chat_completion_request(
     frequency_penalty: float,
     repetition_penalty: float
 ):
-    """Функция для синхронного (не-стримингового) chat-комплишена."""
+    """Функция для синхронного (не-стримингового) chat-комплишена с retries на 429."""
     payload = {
         "model": model,
         "messages": messages,
@@ -75,15 +94,25 @@ def chat_completion_request(
         "Authorization": f"Bearer {api_key}"
     }
 
-    try:
-        resp = requests.post(CHAT_COMPLETIONS_ENDPOINT, headers=headers, data=json.dumps(payload))
-        if resp.status_code == 200:
-            data = resp.json()
-            return data["choices"][0]["message"].get("content", "")
-        else:
-            return f"Ошибка: {resp.status_code} - {resp.text}"
-    except Exception as e:
-        return f"Исключение: {e}"
+    attempts = 0
+    while attempts < MAX_RETRIES:
+        attempts += 1
+        try:
+            resp = requests.post(CHAT_COMPLETIONS_ENDPOINT, headers=headers, data=json.dumps(payload))
+            if resp.status_code == 200:
+                data = resp.json()
+                return data["choices"][0]["message"].get("content", "")
+            elif resp.status_code == 429:
+                # rate limit exceeded, ждем 2 сек
+                time.sleep(2)
+                # и попробуем снова
+                continue
+            else:
+                return f"Ошибка: {resp.status_code} - {resp.text}"
+        except Exception as e:
+            return f"Исключение: {e}"
+    # Если все попытки исчерпаны
+    return "Ошибка: Превышено число попыток при 429 RATE_LIMIT."
 
 
 def process_single_row(
@@ -106,7 +135,7 @@ def process_single_row(
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": f"{user_prompt}\n{row_text}"}
     ]
-    return chat_completion_request(
+    raw_response = chat_completion_request(
         api_key,
         messages,
         model,
@@ -119,6 +148,10 @@ def process_single_row(
         frequency_penalty,
         repetition_penalty
     )
+
+    # Постобработка: убираем banned words
+    final_response = custom_postprocess_text(raw_response)
+    return final_response
 
 
 def process_file(
@@ -257,7 +290,7 @@ with left_col:
 ########################################
 with right_col:
     st.markdown("#### Параметры генерации")
-    response_format = st.selectbox("Response Format", ["text", "csv"])
+    output_format = st.selectbox("Output Format", ["csv", "txt"])  # CSV или TXT
     system_prompt = st.text_area("System Prompt", value="Act like you are a helpful assistant.")
 
     max_tokens = st.slider("max_tokens", min_value=0, max_value=64000, value=512, step=1)
@@ -287,7 +320,7 @@ if st.button("Отправить одиночный промпт"):
             {"role": "user", "content": user_prompt_single}
         ]
         st.info("Отправляем запрос...")
-        response = chat_completion_request(
+        raw_response = chat_completion_request(
             api_key=api_key,
             messages=from_text,
             model=selected_model,
@@ -300,8 +333,9 @@ if st.button("Отправить одиночный промпт"):
             frequency_penalty=frequency_penalty,
             repetition_penalty=repetition_penalty
         )
+        final_response = postprocess_text(raw_response)
         st.success("Результат получен!")
-        st.text_area("Ответ от модели", value=response, height=200)
+        st.text_area("Ответ от модели", value=final_response, height=200)
 
 # Разделительная линия
 st.markdown("---")
@@ -318,7 +352,6 @@ delimiter_input = st.text_input("Разделитель (delimiter)", value="|")
 column_input = st.text_input("Названия колонок (через запятую)", value="id,title")
 
 uploaded_file = st.file_uploader("Прикрепить файл (CSV или TXT, до 100000 строк)", type=["csv", "txt"])
-
 
 df = None
 if uploaded_file is not None:
@@ -368,7 +401,7 @@ if df is not None:
                 user_prompt=user_prompt,
                 df=df,
                 title_col=title_col,
-                response_format=response_format,
+                response_format="csv",  # уже не используем, но пусть есть
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
@@ -383,12 +416,17 @@ if df is not None:
 
             st.success("Обработка завершена!")
 
-            if response_format == "text":
-                st.text_area("Результат (колонка 'rewrite')", value="\n".join(df_out["rewrite"].astype(str)), height=300)
-            else:
+            # Скачивание
+            if output_format == "csv":
+                # Сохраняем как CSV
                 csv_out = df_out.to_csv(index=False).encode("utf-8")
                 st.download_button("Скачать результат (CSV)", data=csv_out, file_name="result.csv", mime="text/csv")
+            else:
+                # Сохраняем как TXT (разделитель |, без заголовков)
+                txt_out = df_out.to_csv(index=False, sep="|", header=False).encode("utf-8")
+                st.download_button("Скачать результат (TXT)", data=txt_out, file_name="result.txt", mime="text/plain")
 
             st.write("### Логи")
             st.write("Обработка завершена, строк обработано:", len(df_out))
+
 
