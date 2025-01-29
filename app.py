@@ -185,62 +185,66 @@ def process_file(
     lines_processed = 0
 
     for start_idx in range(0, total_rows, chunk_size):
-        chunk_start_time = time.time()
-        end_idx = min(start_idx + chunk_size, total_rows)
-        chunk = df.iloc[start_idx:end_idx]
-        chunk_size_actual = end_idx - start_idx
+    chunk_start_time = time.time()
+    end_idx = min(start_idx + chunk_size, total_rows)
 
-        # Запускаем параллельно выполнение для каждой строки в чанке
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_idx = {}
-            for idx, row in chunk.iterrows():
-                row_text = str(row[title_col])
-                future = executor.submit(
-                    process_single_row,
-                    api_key,
-                    model,
-                    system_prompt,
-                    user_prompt,
-                    row_text,
-                    max_tokens,
-                    temperature,
-                    top_p,
-                    min_p,
-                    top_k,
-                    presence_penalty,
-                    frequency_penalty,
-                    repetition_penalty
-                )
-                future_to_idx[future] = idx
+    # Берём индексы строк в этом чанке
+    chunk_indices = list(df.index[range(start_idx, end_idx)])
+    chunk_size_actual = len(chunk_indices)
+    chunk_results = [None] * chunk_size_actual
 
-            # Собираем результаты
-            chunk_results = [None] * chunk_size_actual
-            i = 0
-            for future in concurrent.futures.as_completed(future_to_idx):
-                res = future.result()
-                chunk_results[i] = res
-                i += 1
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_i = {}
+        for i, row_idx in enumerate(chunk_indices):
+            row_text = str(df.loc[row_idx, title_col])
+            future = executor.submit(
+                process_single_row,
+                api_key,
+                model,
+                system_prompt,
+                user_prompt,
+                row_text,
+                max_tokens,
+                temperature,
+                top_p,
+                min_p,
+                top_k,
+                presence_penalty,
+                frequency_penalty,
+                repetition_penalty
+            )
+            future_to_i[future] = i
 
-        # Расширяем общий список результатов
-        results.extend(chunk_results)
+        for future in concurrent.futures.as_completed(future_to_i):
+            i = future_to_i[future]
+            chunk_results[i] = future.result()
 
-        lines_processed += chunk_size_actual
-        progress_bar.progress(lines_processed / total_rows)
+    # Расширяем общий список результатов
+    results.extend(chunk_results)
 
-        time_for_chunk = time.time() - chunk_start_time
-        if chunk_size_actual > 0:
-            time_per_line = time_for_chunk / chunk_size_actual
-            lines_left = total_rows - lines_processed
-            if time_per_line > 0:
-                est_time_left_sec = lines_left * time_per_line
-                if est_time_left_sec < 60:
-                    time_text = f"~{est_time_left_sec:.1f} сек."
-                else:
-                    est_time_left_min = est_time_left_sec / 60.0
-                    time_text = f"~{est_time_left_min:.1f} мин."
-                time_placeholder.info(f"Примерное оставшееся время: {time_text}")
+    lines_processed += chunk_size_actual
+    progress_bar.progress(lines_processed / total_rows)
 
-    df_out = df.copy()
+    time_for_chunk = time.time() - chunk_start_time
+    if chunk_size_actual > 0:
+        time_per_line = time_for_chunk / chunk_size_actual
+        lines_left = total_rows - lines_processed
+        if time_per_line > 0:
+            est_time_left_sec = lines_left * time_per_line
+            if est_time_left_sec < 60:
+                time_text = f"~{est_time_left_sec:.1f} сек."
+            else:
+                est_time_left_min = est_time_left_sec / 60.0
+                time_text = f"~{est_time_left_min:.1f} мин."
+            time_placeholder.info(f"Примерное оставшееся время: {time_text}")
+
+df_out = df.copy()
+df_out["rewrite"] = results
+
+elapsed = time.time() - start_time
+time_placeholder.success(f"Обработка завершена за {elapsed:.1f} секунд.")
+
+return df_out
     df_out["rewrite"] = results
 
     elapsed = time.time() - start_time
@@ -428,5 +432,6 @@ if df is not None:
 
             st.write("### Логи")
             st.write("Обработка завершена, строк обработано:", len(df_out))
+
 
 
