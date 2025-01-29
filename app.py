@@ -327,7 +327,7 @@ target_language = st.selectbox(
     format_func=lambda x: TARGET_LANGUAGES[x]
 )
 
-    if st.button("Обновить список моделей"):
+if st.button("Обновить список моделей"):
         if not api_key:
             st.error("Ключ API пуст")
             model_list = []
