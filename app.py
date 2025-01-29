@@ -85,100 +85,13 @@ def chat_completion_request(
         return f"Исключение: {e}"
 
 
-def chat_completion_request_stream(
-    api_key: str,
-    messages: list,
-    model: str,
-    max_tokens: int,
-    temperature: float,
-    top_p: float,
-    min_p: float,
-    top_k: int,
-    presence_penalty: float,
-    frequency_penalty: float,
-    repetition_penalty: float
-):
-    """Пример стриминг-запроса (stream=True). Возвращает генератор чанков текста."""
-
-    payload = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "top_p": top_p,
-        "top_k": top_k,
-        "presence_penalty": presence_penalty,
-        "frequency_penalty": frequency_penalty,
-        "repetition_penalty": repetition_penalty,
-        "min_p": min_p,
-        "stream": True  # Включаем стриминг
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
-
-    # Используем stream=True, чтобы считывать чанки построчно
-    with requests.post(CHAT_COMPLETIONS_ENDPOINT, headers=headers, json=payload, stream=True) as resp:
-        if resp.status_code != 200:
-            yield f"Ошибка: {resp.status_code} - {resp.text}"
-            return
-        for chunk in resp.iter_lines(decode_unicode=True):
-            if chunk:
-                if chunk.startswith("data: "):
-                    data_str = chunk[len("data: ") :]
-                    if data_str.strip() == "[DONE]":
-                        # Завершение стрима
-                        break
-                    try:
-                        chunk_json = json.loads(data_str)
-                        delta_content = chunk_json["choices"][0]["delta"].get("content", "")
-                        yield delta_content
-                    except Exception as e:
-                        yield f"[JSON parse error: {e}]"
-
-
-def send_single_prompt(
-    api_key: str,
-    model: str,
-    system_prompt: str,
-    user_prompt: str,
-    max_tokens: int,
-    temperature: float,
-    top_p: float,
-    min_p: float,
-    top_k: int,
-    presence_penalty: float,
-    frequency_penalty: float,
-    repetition_penalty: float
-):
-    """Отправляет одиночный промпт без файла (нестриминговый)."""
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt}
-    ]
-    return chat_completion_request(
-        api_key,
-        messages,
-        model,
-        max_tokens,
-        temperature,
-        top_p,
-        min_p,
-        top_k,
-        presence_penalty,
-        frequency_penalty,
-        repetition_penalty
-    )
-
-
 def process_file(
     api_key: str,
     model: str,
     system_prompt: str,
     user_prompt: str,
     df: pd.DataFrame,
+    title_col: str,  # Название колонки, которую надо переписать
     response_format: str,
     max_tokens: int,
     temperature: float,
@@ -208,7 +121,8 @@ def process_file(
         chunk_size_actual = end_idx - start_idx
 
         for idx, row in chunk.iterrows():
-            row_text = str(row['title'])
+            # Берем колонку, которую пользователь выбрал как 'title'
+            row_text = str(row[title_col])
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"{user_prompt}\n{row_text}"}
@@ -246,23 +160,13 @@ def process_file(
                 time_placeholder.info(f"Примерное оставшееся время: {time_text}")
 
     df_out = df.copy()
-    df_out["response"] = results
+    # Переименуем столбец с результатом, чтобы было видно, что это переписанный title
+    df_out["rewrite"] = results
 
     elapsed = time.time() - start_time
     time_placeholder.success(f"Обработка завершена за {elapsed:.1f} секунд.")
 
     return df_out
-
-#######################################
-# 3) ИСТОРИЯ ЧАТОВ / CHAT HISTORY
-#######################################
-
-def init_chat_history():
-    if "chat_history" not in st.session_state:
-        # Инициализируем с системным сообщением
-        st.session_state["chat_history"] = [
-            {"role": "system", "content": "Act like you are a helpful assistant."}
-        ]
 
 #######################################
 # 4) ИНТЕРФЕЙС
@@ -322,7 +226,7 @@ with right_col:
 st.markdown("---")
 
 ########################################
-# Блок одиночного промпта (без файла, обычный)
+# Поле одиночного промпта (не обязательно)
 ########################################
 st.subheader("Одиночный промпт")
 user_prompt_single = st.text_area("Введите ваш промпт для одиночной генерации")
@@ -331,12 +235,15 @@ if st.button("Отправить одиночный промпт"):
     if not api_key:
         st.error("API Key не указан!")
     else:
+        from_text = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt_single}
+        ]
         st.info("Отправляем запрос...")
-        single_result = send_single_prompt(
+        response = chat_completion_request(
             api_key=api_key,
+            messages=from_text,
             model=selected_model,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt_single,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
@@ -347,35 +254,49 @@ if st.button("Отправить одиночный промпт"):
             repetition_penalty=repetition_penalty
         )
         st.success("Результат получен!")
-        st.text_area("Ответ от модели", value=single_result, height=200)
+        st.text_area("Ответ от модели", value=response, height=200)
 
 # Разделительная линия
 st.markdown("---")
-
-########################################
-
-
-########################################
-
 
 ########################################
 # Блок обработки файла
 ########################################
 st.subheader("Обработка данных из файла")
 
-user_prompt = st.text_area("Пользовательский промпт (для каждой строки)")
+user_prompt = st.text_area("Пользовательский промпт (дополнительно к заголовку)")
+
+st.markdown("##### Настройка парсинга TXT/CSV")
+delimiter_input = st.text_input("Разделитель (delimiter)", value="|")
+column_input = st.text_input("Названия колонок (через запятую)", value="id,title")
+
 uploaded_file = st.file_uploader("Прикрепить файл (CSV или TXT, до 100000 строк)", type=["csv", "txt"])
+
 
 df = None
 if uploaded_file is not None:
     file_extension = uploaded_file.name.split(".")[-1]
     try:
         if file_extension == "csv":
+            # Если человек хочет сам выбирать delimiter / колонки, можно учесть, иначе просто .read_csv
+            # тут в примере пусть csv читаем обычным способом:
             df = pd.read_csv(uploaded_file)
         else:
+            # Предполагаем TXT, парсим с учётом delimiter и колонок
             content = uploaded_file.read().decode("utf-8")
             lines = content.splitlines()
-            df = pd.DataFrame(lines)
+
+            # Получаем список колонок
+            columns = [c.strip() for c in column_input.split(",")]
+
+            # Разбиваем каждую строку по delimiter, сохраняя кол-во столбцов
+            parsed_lines = []
+            for line in lines:
+                splitted = line.split(delimiter_input, maxsplit=len(columns) - 1)
+                # если не совпадает кол-во столбцов, можно доп. обработку сделать
+                parsed_lines.append(splitted)
+
+            df = pd.DataFrame(parsed_lines, columns=columns)
 
         st.write("### Предпросмотр файла")
         st.dataframe(df.head())
@@ -384,6 +305,10 @@ if uploaded_file is not None:
         df = None
 
 if df is not None:
+    # Выбор, какая колонка считается заголовком (title)
+    cols = df.columns.tolist()
+    title_col = st.selectbox("Какая колонка является заголовком?", cols)
+
     if st.button("Запустить обработку файла"):
         if not api_key:
             st.error("API Key не указан!")
@@ -399,6 +324,7 @@ if df is not None:
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 df=df,
+                title_col=title_col,
                 response_format=response_format,
                 max_tokens=max_tokens,
                 temperature=temperature,
@@ -413,9 +339,9 @@ if df is not None:
 
             st.success("Обработка завершена!")
 
-            # Вывод результата
+            # df_out["rewrite"] уже есть
             if response_format == "text":
-                st.text_area("Результат", value="\n".join(df_out["response"].astype(str)), height=300)
+                st.text_area("Результат (колонка 'rewrite')", value="\n".join(df_out["rewrite"].astype(str)), height=300)
             else:
                 csv_out = df_out.to_csv(index=False).encode("utf-8")
                 st.download_button("Скачать результат (CSV)", data=csv_out, file_name="result.csv", mime="text/csv")
