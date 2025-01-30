@@ -1000,108 +1000,134 @@ with tabs[2]:
     # Разделительная линия
     st.markdown("---")
 
-########################################
-# Блок выбора колонок и настроек
-########################################
-if df_rewrite is not None:
-    cols_rewrite = df_rewrite.columns.tolist()
-    id_col_rewrite = st.selectbox("Какая колонка является ID?", cols_rewrite, key="id_col_rewrite")
-    title_col_rewrite = st.selectbox("Какая колонка является заголовком для рерайтинга?", cols_rewrite, key="title_col_rewrite")
+    ########################################
+    # Блок загрузки файла для RewritePro
+    ########################################
+    st.subheader("📂 Загрузка файла для рерайтинга")
 
-    # Инициализация дополнительных колонок, если их нет
-    if "rewrite" not in df_rewrite.columns:
-        df_rewrite["rewrite"] = ""
-    if "status" not in df_rewrite.columns:
-        df_rewrite["status"] = 0.0
-    if "rewrite_button" not in df_rewrite.columns:
-        df_rewrite["rewrite_button"] = ""  # Инициализируем столбец кнопками
+    st.markdown("##### Настройка парсинга TXT/CSV для рерайтинга")
+    delimiter_input_rewrite = st.text_input("Разделитель (delimiter) для рерайтинга", value="|", key="delimiter_input_rewrite")
+    column_input_rewrite = st.text_input("Названия колонок (через запятую) для рерайтинга", value="id,title", key="column_input_rewrite")
 
-    # Сохранение DataFrame в session_state для дальнейшего обновления
-    if "df_rewrite" not in st.session_state:
-        st.session_state["df_rewrite"] = df_rewrite.copy()
-    else:
-        # Обновляем DataFrame, если файл был загружен заново
-        if st.session_state.get("uploaded_file_rewrite") != uploaded_file_rewrite:
+    uploaded_file_rewrite = st.file_uploader("Прикрепить файл для рерайтинга (CSV или TXT, до 100000 строк)", type=["csv", "txt"], key="uploaded_file_rewrite")
+
+    df_rewrite = None
+    if uploaded_file_rewrite is not None:
+        file_extension_rewrite = uploaded_file_rewrite.name.split(".")[-1].lower()
+        try:
+            if file_extension_rewrite == "csv":
+                df_rewrite = pd.read_csv(uploaded_file_rewrite)
+            else:
+                content_rewrite = uploaded_file_rewrite.read().decode("utf-8")
+                lines_rewrite = content_rewrite.splitlines()
+
+                columns_rewrite = [c.strip() for c in column_input_rewrite.split(",")]
+
+                parsed_lines_rewrite = []
+                for line in lines_rewrite:
+                    splitted_rewrite = line.split(delimiter_input_rewrite, maxsplit=len(columns_rewrite) - 1)
+                    if len(splitted_rewrite) < len(columns_rewrite):
+                        # Заполняем недостающие колонки пустыми строками
+                        splitted_rewrite += [""] * (len(columns_rewrite) - len(splitted_rewrite))
+                    parsed_lines_rewrite.append(splitted_rewrite)
+
+                df_rewrite = pd.DataFrame(parsed_lines_rewrite, columns=columns_rewrite)
+
+            st.write("### Предпросмотр файла для рерайтинга")
+            st.dataframe(df_rewrite.head())
+        except Exception as e:
+            st.error(f"Ошибка при чтении файла для рерайтинга: {e}")
+            df_rewrite = None
+
+    ########################################
+    # Блок выбора колонок и настроек
+    ########################################
+    if df_rewrite is not None:
+        cols_rewrite = df_rewrite.columns.tolist()
+        id_col_rewrite = st.selectbox("Какая колонка является ID?", cols_rewrite, key="id_col_rewrite")
+        title_col_rewrite = st.selectbox("Какая колонка является заголовком для рерайтинга?", cols_rewrite, key="title_col_rewrite")
+
+        # Инициализация дополнительных колонок, если их нет
+        if "rewrite" not in df_rewrite.columns:
+            df_rewrite["rewrite"] = ""
+        if "status" not in df_rewrite.columns:
+            df_rewrite["status"] = 0.0
+
+        # Сохранение DataFrame в session_state для дальнейшего обновления
+        if "df_rewrite" not in st.session_state:
             st.session_state["df_rewrite"] = df_rewrite.copy()
+        else:
+            # Обновляем DataFrame, если файл был загружен заново
+            if st.session_state.get("uploaded_file_rewrite") != uploaded_file_rewrite:
+                st.session_state["df_rewrite"] = df_rewrite.copy()
 
-    df_rewrite = st.session_state["df_rewrite"]
+        df_rewrite = st.session_state["df_rewrite"]
 
-    # Отображение таблицы с кнопками для рерайтинга
-    st.write("### Таблица для рерайтинга")
+        # Отладочная информация
+        st.write("### Структура DataFrame для рерайтинга:")
+        st.write(df_rewrite.dtypes)
+        st.write(df_rewrite.head())
 
-    # Настройка AgGrid
-    gb = GridOptionsBuilder.from_dataframe(df_rewrite)
-    gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=50)  # Отображать 50 строк на странице
-    gb.configure_side_bar()
-    gb.configure_default_column(editable=False, sortable=True, filter=True)
-    # Добавление кнопки "Переписать" в каждую строку
-    gb.configure_column("rewrite", editable=False)
-    gb.configure_column("status", editable=False)
-    # Добавляем специальный столбец для кнопки
-    gb.configure_column("rewrite_button", headerName="", cellRenderer='''function(params) {
-        return '<button style="padding: 5px 10px;">Переписать</button>';
-    }''', width=120, suppressMenu=True)
+        # Отображение таблицы с кнопками для рерайтинга
+        st.write("### Таблица для рерайтинга")
 
-    try:
-        gridOptions = gb.build()
-    except TypeError as te:
-        st.error(f"TypeError при построении gridOptions: {te}")
-        st.stop()
-    except Exception as e:
-        st.error(f"Ошибка при построении gridOptions: {e}")
-        st.stop()
+        # Настройка AgGrid
+        gb = GridOptionsBuilder.from_dataframe(df_rewrite)
+        gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=50)  # Отображать 50 строк на странице
+        gb.configure_side_bar()
+        gb.configure_default_column(editable=False, sortable=True, filter=True)
 
-    # Отображение таблицы с AgGrid
-    grid_response = AgGrid(
-        df_rewrite,
-        gridOptions=gridOptions,
-        height=500,
-        width='100%',
-        update_mode=GridUpdateMode.SELECTION_CHANGED,
-        data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
-        fit_columns_on_grid_load=False,
-        allow_unsafe_jscode=True,  # Разрешить выполнение пользовательского JS
-        enable_enterprise_modules=False,
-        theme='light'
-    )
+        # Добавление столбцов 'rewrite' и 'status' без редактирования
+        gb.configure_column("rewrite", editable=False)
+        gb.configure_column("status", editable=False)
 
+        # Не добавляем 'rewrite_button' столбец, так как он не поддерживается интерактивно
 
-        # Обработка кликов на кнопки "Переписать"
-        # В текущей версии st-aggrid нет прямой поддержки обработки кнопок внутри ячеек,
-        # поэтому необходимо использовать пользовательский JavaScript или альтернативные методы.
-        # Для упрощения, можно использовать стандартные кнопки под таблицей.
+        gridOptions = None
+        try:
+            gridOptions = gb.build()
+        except TypeError as te:
+            st.error(f"TypeError при построении gridOptions: {te}")
+            st.stop()
+        except Exception as e:
+            st.error(f"Ошибка при построении gridOptions: {e}")
+            st.stop()
 
-        st.write("### Переписать конкретные строки")
-        for idx, row in df_rewrite.iterrows():
-            cols = st.columns([1, 3, 3, 1, 1, 1])  # Настройка ширины колонок
-            with cols[0]:
-                st.write(idx + 1)  # Номер строки
-            with cols[1]:
-                st.write(row[id_col_rewrite])  # ID
-            with cols[2]:
-                st.write(row[title_col_rewrite])  # Title
-            with cols[3]:
-                st.write(row["rewrite"])  # Rewrite
-            with cols[4]:
-                st.write(f"{row['status']}/10")  # Оценка
+        # Отображение таблицы с AgGrid
+        grid_response = AgGrid(
+            df_rewrite,
+            gridOptions=gridOptions,
+            height=500,
+            width='100%',
+            update_mode=GridUpdateMode.SELECTION_CHANGED,
+            data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+            fit_columns_on_grid_load=False,
+            allow_unsafe_jscode=False,  # Запрещаем выполнение пользовательского JS
+            enable_enterprise_modules=False,
+            theme='light'
+        )
 
-            # Добавление кнопки "Переписать" рядом с каждой строкой
-            with cols[5]:
-                button_key = f"rewrite_button_{idx}"
-                if st.button("Переписать", key=button_key):
-                    rewrite_text = row[title_col_rewrite]
-                    st.info(f"Переписываем строку ID: {row[id_col_rewrite]}")
-                    try:
+        # Обработка выбранных строк
+        selected_rows = grid_response['selected_rows']
+        if selected_rows:
+            st.write("### Действия над выбранными строками")
+            if st.button("Переписать выбранные строки", key="rewrite_selected"):
+                try:
+                    for row in selected_rows:
+                        idx = df_rewrite.index[df_rewrite[id_col_rewrite] == row[id_col_rewrite]][0]
+                        rewrite_text = row[title_col_rewrite]
+                        st.info(f"Переписываем строку ID: {row[id_col_rewrite]}")
                         # Проверка типа row_text
                         if not isinstance(rewrite_text, str):
-                            raise TypeError(f"row_text должен быть строкой, а получен {type(rewrite_text)}")
+                            st.error(f"row_text должен быть строкой, а получен {type(rewrite_text)} для строки ID {row[id_col_rewrite]}")
+                            continue
 
                         new_rewrite = rewrite_specific_row(
                             api_key=st.session_state["api_key"],
                             model=selected_model_rewritepro,
                             system_prompt=system_prompt_rewritepro,
                             user_prompt="Rewrite the following title:",
-                            row_text=rewrite_text,  # Убедитесь, что здесь нет запятой
+                            row_text=rewrite_text,
                             max_tokens=max_tokens_rewritepro,
                             temperature=temperature_rewritepro,
                             top_p=top_p_rewritepro,
@@ -1119,11 +1145,11 @@ if df_rewrite is not None:
                             rewrite_text=new_rewrite
                         )
                         df_rewrite.at[idx, "status"] = score
-                        st.success(f"Рерайт завершён. Оценка: {score}/10")
-                        # Обновляем session_state
-                        st.session_state["df_rewrite"] = df_rewrite.copy()
-                    except Exception as e:
-                        st.error(f"Ошибка при рерайтинге строки ID {row[id_col_rewrite]}: {e}")
+                        st.success(f"Рерайт завершён для ID {row[id_col_rewrite]}. Оценка: {score}/10")
+                    # Обновляем session_state
+                    st.session_state["df_rewrite"] = df_rewrite.copy()
+                except Exception as e:
+                    st.error(f"Ошибка при рерайтинге выбранных строк: {e}")
 
         # Разделительная линия
         st.markdown("---")
@@ -1211,6 +1237,7 @@ if df_rewrite is not None:
 
         st.write("### Логи")
         st.write("Рерайтинг завершен, строк обработано:", len(df_rewrite))
+
 
 ########################################
 # Боковая панель: Ввод API Key
