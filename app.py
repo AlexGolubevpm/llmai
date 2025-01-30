@@ -21,7 +21,7 @@ DEFAULT_API_KEY = "sk_MyidbhnT9jXzw-YDymhijjY8NF15O0Qy7C36etNTAxE"
 # Максимальное количество повторных попыток при 429 (Rate Limit)
 MAX_RETRIES = 3
 
-st.set_page_config(page_title="Novita AI Batch Processor", layout="wide")
+st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
 
 #######################################
 # 2) ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -175,7 +175,6 @@ def process_file(
     start_time = time.time()
     lines_processed = 0
 
-    # === Исправленный блок с нормальными отступами: ===
     for start_idx in range(0, total_rows, chunk_size):
         chunk_start_time = time.time()
         end_idx = min(start_idx + chunk_size, total_rows)
@@ -229,8 +228,6 @@ def process_file(
                     est_time_left_min = est_time_left_sec / 60.0
                     time_text = f"~{est_time_left_min:.1f} мин."
                 time_placeholder.info(f"Примерное оставшееся время: {time_text}")
-
-    # === Конец цикла ===
 
     # Создаем копию df с новым столбцом
     df_out = df.copy()
@@ -393,8 +390,6 @@ def process_translation_file(
                     time_text = f"~{est_time_left_min:.1f} мин."
                 time_placeholder.info(f"Примерное оставшееся время: {time_text}")
 
-    # === Конец цикла ===
-
     # Создаем копию df с новым столбцом
     df_out = df.copy()
     df_out["translated_title"] = results
@@ -411,11 +406,11 @@ def process_translation_file(
 st.title("🧠 Novita AI Batch Processor")
 
 # Поле ввода API Key, доступное во всех вкладках
-st.sidebar.header("Настройки API")
-api_key = st.sidebar.text_input("API Key", value=DEFAULT_API_KEY, type="password")
+st.sidebar.header("🔧 Настройки API")
+api_key = st.sidebar.text_input("🔑 API Key", value=DEFAULT_API_KEY, type="password")
 
 # Создаем вкладки для разделения функционала
-tabs = st.tabs(["Обработка текста", "Перевод текста"])
+tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста"])
 
 ########################################
 # Вкладка 1: Обработка текста
@@ -430,7 +425,7 @@ with tabs[0]:
     # Левая колонка: Список моделей
     ########################################
     with left_col:
-        st.markdown("#### Модели для обработки текста")
+        st.markdown("#### 🤖 Модели для обработки текста")
         st.caption("Список моделей загружается из API Novita AI")
 
         if st.button("🔄 Обновить список моделей (Обработка текста)", key="refresh_models_text"):
@@ -457,13 +452,14 @@ with tabs[0]:
     # Правая колонка: Настройки генерации
     ########################################
     with right_col:
-        st.markdown("#### Параметры генерации для обработки текста")
+        st.markdown("#### ⚙️ Параметры генерации для обработки текста")
         
         # Добавление выбора стиля
         style_options = ["Aggressive", "Artistic", "Playful", "Bold", "Explicit"]
         selected_style = st.selectbox("🎨 Выберите стиль генерации", style_options, key="selected_style_text")
 
         output_format = st.selectbox("📄 Формат вывода", ["csv", "txt"], key="output_format_text")  # CSV или TXT
+
         system_prompt_text = st.text_area(
             "📜 System Prompt",
             value="You are an advanced NSFW content rewriter and evaluator. Generate one vivid and explicit title based on the input, ensuring it stays within 90 characters. The title should align with NSFW standards, SEO relevance, and native fluency.",
@@ -519,6 +515,10 @@ with tabs[0]:
             final_response = custom_postprocess_text(raw_response)
             st.success("✅ Результат получен!")
             st.text_area("📄 Ответ от модели", value=final_response, height=200)
+            # Сохранение в историю
+            if "history" not in st.session_state:
+                st.session_state["history"] = []
+            st.session_state["history"].append({"prompt": full_user_prompt, "response": final_response})
 
     # Разделительная линия
     st.markdown("---")
@@ -614,7 +614,58 @@ with tabs[0]:
                     st.download_button("📥 Скачать результат (TXT)", data=txt_out_text, file_name="result.txt", mime="text/plain")
 
                 st.write("### 📝 Логи")
-                st.write(f"✅ Обработка завершена, строк обработано: {len(df_out_text)}")
+                st.write("✅ Обработка завершена, строк обработано:", len(df_out_text))
+                # Сохранение в историю
+                st.session_state["history"].append({"prompt": full_user_prompt, "response": df_out_text.to_dict()})
+
+    # Добавление предварительной обработки текста
+    if df_text is not None:
+        if st.button("🧹 Предварительно обработать текст", key="preprocess_text"):
+            df_text = preprocess_text(df_text, title_col_text)
+            st.success("✅ Текст предварительно обработан!")
+            st.dataframe(df_text.head())
+
+    # Визуализация результатов
+    if df_text is not None and "rewrite" in df_text.columns:
+        st.markdown("---")
+        st.subheader("📊 Визуализация результатов")
+        visualize_results(df_text, "rewrite")
+
+    ########################################
+    # Дополнительные Важные Функции
+    ########################################
+
+    # 1. Предварительная обработка текста
+    def preprocess_text(df, text_col):
+        """Функция для предварительной обработки текста."""
+        df[text_col] = df[text_col].str.strip().str.lower()
+        return df
+
+    # 2. Сохранение истории запросов
+    if "history" not in st.session_state:
+        st.session_state["history"] = []
+
+    def add_to_history(prompt, response):
+        """Добавляет запрос и ответ в историю."""
+        st.session_state["history"].append({"prompt": prompt, "response": response})
+
+    # 3. Визуализация результатов
+    def visualize_results(df, column):
+        """Функция для визуализации распределения длины заголовков."""
+        df['title_length'] = df[column].apply(len)
+        st.write("### 📈 Распределение длины заголовков")
+        st.bar_chart(df['title_length'].value_counts().sort_index())
+
+    # Добавление раздела истории запросов
+    st.markdown("---")
+    st.subheader("📚 История запросов")
+    if st.session_state["history"]:
+        for entry in st.session_state["history"]:
+            st.write(f"**Промпт:** {entry['prompt']}")
+            st.write(f"**Ответ:** {entry['response']}")
+            st.markdown("---")
+    else:
+        st.info("История запросов пуста.")
 
 ########################################
 # Вкладка 2: Перевод текста
@@ -629,7 +680,7 @@ with tabs[1]:
     # Левая колонка: Список моделей для перевода
     ########################################
     with left_col_trans:
-        st.markdown("#### Модели для перевода текста")
+        st.markdown("#### 🤖 Модели для перевода текста")
         st.caption("Список моделей загружается из API Novita AI")
 
         if st.button("🔄 Обновить список моделей (Перевод текста)", key="refresh_models_translate"):
@@ -656,13 +707,14 @@ with tabs[1]:
     # Правая колонка: Настройки генерации для перевода
     ########################################
     with right_col_trans:
-        st.markdown("#### Параметры генерации для перевода текста")
+        st.markdown("#### ⚙️ Параметры генерации для перевода текста")
         
         # Добавление выбора стиля
         style_options_translate = ["Aggressive", "Artistic", "Playful", "Bold", "Explicit"]
         selected_style_translate = st.selectbox("🎨 Выберите стиль перевода", style_options_translate, key="selected_style_translate")
         
         translate_output_format = st.selectbox("📄 Формат вывода перевода", ["csv", "txt"], key="translate_output_format")  # CSV или TXT
+
         system_prompt_translate = st.text_area(
             "📜 System Prompt для перевода",
             value="You are a professional translator.",
@@ -790,17 +842,46 @@ with tabs[1]:
                     st.download_button("📥 Скачать переведенный файл (TXT)", data=txt_translated, file_name="translated_result.txt", mime="text/plain")
 
                 st.write("### 📝 Логи")
-                st.write(f"✅ Перевод завершен, строк переведено: {len(df_translated)}")
+                st.write("✅ Перевод завершен, строк переведено:", len(df_translated))
+                # Сохранение в историю
+                st.session_state["history"].append({"prompt": user_prompt_translate, "response": df_translated.to_dict()})
 
 ########################################
 # Дополнительные Важные Функции
 ########################################
 
-# Топ-3 функции, которые могут быть полезны пользователям:
+# 1. Предварительная обработка текста
+def preprocess_text(df, text_col):
+    """Функция для предварительной обработки текста."""
+    df[text_col] = df[text_col].str.strip().str.lower()
+    return df
 
-# 1. **Предварительная обработка текста**: Возможность очистки и нормализации текста перед отправкой на обработку.
-# 2. **Сохранение истории запросов**: Возможность просматривать ранее отправленные запросы и полученные ответы.
-# 3. **Визуализация результатов**: Интерактивные графики и статистика по обработанным данным.
+# 2. Сохранение истории запросов
+if "history" not in st.session_state:
+    st.session_state["history"] = []
+
+def add_to_history(prompt, response):
+    """Добавляет запрос и ответ в историю."""
+    st.session_state["history"].append({"prompt": prompt, "response": response})
+
+# 3. Визуализация результатов
+def visualize_results(df, column):
+    """Функция для визуализации распределения длины заголовков."""
+    df['title_length'] = df[column].apply(len)
+    st.write("### 📈 Распределение длины заголовков")
+    st.bar_chart(df['title_length'].value_counts().sort_index())
+
+# Добавление раздела истории запросов
+st.markdown("---")
+st.subheader("📚 История запросов")
+if st.session_state["history"]:
+    for entry in st.session_state["history"]:
+        st.write(f"**Промпт:** {entry['prompt']}")
+        st.write(f"**Ответ:** {entry['response']}")
+        st.markdown("---")
+else:
+    st.info("История запросов пуста.")
+
 
 # Реализация функции 1: Предварительная обработка текста
 def preprocess_text(df, text_col):
