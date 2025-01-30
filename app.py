@@ -1078,8 +1078,8 @@ with tabs[2]:
 
     df_rewrite = None
     if uploaded_file_rewrite is not None:
-        file_extension_rewrite = uploaded_file_rewrite.name.split(".")[-1].lower()
-        try:
+       try: file_extension_rewrite = uploaded_file_rewrite.name.split(".")[-1].lower()
+           
             if file_extension_rewrite == "csv":
                 df_rewrite = pd.read_csv(uploaded_file_rewrite)
             else:
