@@ -5,7 +5,7 @@ import pandas as pd
 import time
 import concurrent.futures
 import re
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
+from typing import Tuple
 
 #######################################
 # 1) НАСТРОЙКИ ПРИЛОЖЕНИЯ
@@ -68,7 +68,7 @@ def chat_completion_request(
     presence_penalty: float,
     frequency_penalty: float,
     repetition_penalty: float
-):
+) -> str:
     """Функция для синхронного (не-стримингового) chat-комплишена с retries на 429."""
     payload = {
         "model": model,
@@ -76,11 +76,11 @@ def chat_completion_request(
         "max_tokens": max_tokens,
         "temperature": temperature,
         "top_p": top_p,
+        "min_p": min_p,
         "top_k": top_k,
         "presence_penalty": presence_penalty,
         "frequency_penalty": frequency_penalty,
-        "repetition_penalty": repetition_penalty,
-        "min_p": min_p
+        "repetition_penalty": repetition_penalty
     }
 
     headers = {
@@ -122,7 +122,7 @@ def process_single_row(
     presence_penalty: float,
     frequency_penalty: float,
     repetition_penalty: float
-):
+) -> str:
     """Функция-обёртка для параллельного вызова."""
     messages = [
         {"role": "system", "content": system_prompt},
@@ -164,7 +164,7 @@ def process_file(
     repetition_penalty: float,
     chunk_size: int = 10,  # фиксируем 10 строк в чанке
     max_workers: int = 5  # Количество потоков
-):
+) -> pd.DataFrame:
     """Параллельно обрабатываем загруженный файл построчно (или чанками)."""
 
     progress_bar = st.progress(0)
@@ -258,7 +258,7 @@ def translate_completion_request(
     presence_penalty: float,
     frequency_penalty: float,
     repetition_penalty: float
-):
+) -> str:
     """Функция для перевода текста с retries на 429."""
     raw_response = chat_completion_request(
         api_key,
@@ -292,7 +292,7 @@ def process_translation_single_row(
     presence_penalty: float,
     frequency_penalty: float,
     repetition_penalty: float
-):
+) -> str:
     """Функция-обёртка для параллельного вызова перевода."""
     messages = [
         {"role": "system", "content": system_prompt},
@@ -330,7 +330,7 @@ def process_translation_file(
     repetition_penalty: float,
     chunk_size: int = 10,  # фиксируем 10 строк в чанке
     max_workers: int = 5  # Количество потоков
-):
+) -> pd.DataFrame:
     """Параллельно переводим загруженный файл построчно (или чанками)."""
 
     progress_bar = st.progress(0)
@@ -412,7 +412,7 @@ def process_translation_file(
 
 # ======= Новые функции для RewritePro =======
 
-def evaluate_rewrite(api_key: str, model: str, rewrite_text: str):
+def evaluate_rewrite(api_key: str, model: str, rewrite_text: str) -> float:
     """
     Функция для оценки качества рерайта.
     Возвращает оценку от 0 до 10.
@@ -460,7 +460,7 @@ def rewrite_specific_row(
     presence_penalty: float,
     frequency_penalty: float,
     repetition_penalty: float
-):
+) -> str:
     """Функция для рерайтинга конкретной строки."""
     return process_single_row(
         api_key,
@@ -485,12 +485,16 @@ def postprocess_rewrites(
     rewrite_col: str,
     status_col: str,
     threshold: float = 7.0
-):
+) -> pd.DataFrame:
     """Функция для оценки и переписывания строк с низкой оценкой."""
-    for idx, row in df.iterrows():
+    # Создаём копию DataFrame для изменений
+    df_out = df.copy()
+    
+    for idx, row in df_out.iterrows():
         current_score = row[status_col]
         if current_score < threshold:
             original_text = row[rewrite_col]
+            st.info(f"Переписываем строку ID: {row['id']} с оценкой {current_score}/10")
             # Рерайтим текст
             new_rewrite = rewrite_specific_row(
                 api_key=api_key,
@@ -507,15 +511,16 @@ def postprocess_rewrites(
                 frequency_penalty=0.0,
                 repetition_penalty=1.0
             )
-            df.at[idx, rewrite_col] = new_rewrite
+            df_out.at[idx, rewrite_col] = new_rewrite
             # Оцениваем новый рерайт
             new_score = evaluate_rewrite(
                 api_key=api_key,
                 model=model,
                 rewrite_text=new_rewrite
             )
-            df.at[idx, status_col] = new_score
-    return df
+            df_out.at[idx, status_col] = new_score
+            st.success(f"Рерайт завершён для ID {row['id']}. Новая оценка: {new_score}/10")
+    return df_out
 
 def postprocess_by_words(
     api_key: str,
@@ -524,11 +529,15 @@ def postprocess_by_words(
     rewrite_col: str,
     status_col: str,
     words: list
-):
+) -> pd.DataFrame:
     """Функция для переписывания строк, содержащих определённые слова."""
-    for idx, row in df.iterrows():
+    # Создаём копию DataFrame для изменений
+    df_out = df.copy()
+    
+    for idx, row in df_out.iterrows():
         text = row[rewrite_col]
         if any(word.lower() in text.lower() for word in words):
+            st.info(f"Переписываем строку ID: {row['id']} содержащую слова {words}")
             # Рерайтим текст
             new_rewrite = rewrite_specific_row(
                 api_key=api_key,
@@ -545,15 +554,16 @@ def postprocess_by_words(
                 frequency_penalty=0.0,
                 repetition_penalty=1.0
             )
-            df.at[idx, rewrite_col] = new_rewrite
+            df_out.at[idx, rewrite_col] = new_rewrite
             # Оцениваем новый рерайт
             new_score = evaluate_rewrite(
                 api_key=api_key,
                 model=model,
                 rewrite_text=new_rewrite
             )
-            df.at[idx, status_col] = new_score
-    return df
+            df_out.at[idx, status_col] = new_score
+            st.success(f"Рерайт завершён для ID {row['id']}. Новая оценка: {new_score}/10")
+    return df_out
 
 #######################################
 # 3) ИНТЕРФЕЙС
@@ -561,7 +571,7 @@ def postprocess_by_words(
 
 st.title("🧠 Novita AI Batch Processor")
 
-# Создаем вкладки для разделения функционала
+# Создаём вкладки для разделения функционала
 tabs = st.tabs(["Обработка текста", "Перевод текста", "RewritePro"])
 
 ########################################
@@ -1068,53 +1078,52 @@ with tabs[2]:
         st.write(df_rewrite.dtypes)
         st.write(df_rewrite.head())
 
-        # Отображение таблицы с кнопками для рерайтинга
+        # Отображение таблицы с AgGrid
         st.write("### Таблица для рерайтинга")
 
-        # Настройка AgGrid
-        gb = GridOptionsBuilder.from_dataframe(df_rewrite)
-        gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=50)  # Отображать 50 строк на странице
-        gb.configure_side_bar()
-        gb.configure_default_column(editable=False, sortable=True, filter=True)
+        # Используем стандартные компоненты Streamlit вместо AgGrid
+        # Выводим таблицу с возможностью выбора строк
+        st.write(df_rewrite)
 
-        # Добавление столбцов 'rewrite' и 'status' без редактирования
-        gb.configure_column("rewrite", editable=False)
-        gb.configure_column("status", editable=False)
+        # Выбор строк для рерайтинга
+        st.markdown("### Выбор строк для рерайтинга")
+        unique_ids = df_rewrite[id_col_rewrite].tolist()
+        selected_ids = st.multiselect("Выберите ID строк для рерайтинга", options=unique_ids)
 
-        # Не добавляем 'rewrite_button' столбец, так как он не поддерживается интерактивно
-
-        gridOptions = None
-        try:
-            gridOptions = gb.build()
-        except TypeError as te:
-            st.error(f"TypeError при построении gridOptions: {te}")
-            st.stop()
-        except Exception as e:
-            st.error(f"Ошибка при построении gridOptions: {e}")
-            st.stop()
-
-        # Отображение таблицы с AgGrid
-        grid_response = AgGrid(
-            df_rewrite,
-            gridOptions=gridOptions,
-            height=500,
-            width='100%',
-            update_mode=GridUpdateMode.SELECTION_CHANGED,
-            data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
-            fit_columns_on_grid_load=False,
-            allow_unsafe_jscode=False,  # Запрещаем выполнение пользовательского JS
-            enable_enterprise_modules=False,
-            theme='light'
-        )
-
-        # Обработка выбранных строк
-        selected_rows = grid_response['selected_rows']
-        if selected_rows:
-            st.write("### Действия над выбранными строками")
-            if st.button("Переписать выбранные строки", key="rewrite_selected"):
+        if st.button("Переписать выбранные строки", key="rewrite_selected"):
+            if not st.session_state.get("api_key"):
+                st.error("API Key не указан!")
+            elif not selected_ids:
+                st.error("Пожалуйста, выберите хотя бы одну строку для рерайтинга.")
+            else:
                 try:
-                    for row in selected_rows:
-                        idx = df_rewrite.index[df_rewrite[id_col_rewrite] == row[id_col_rewrite]][0]
+                    # Создание конфигурационного словаря
+                    config = {
+                        'api_key': st.session_state["api_key"],
+                        'model_rewrite': selected_model_rewritepro,
+                        'model_evaluate': selected_model_helper,
+                        'system_prompt_rewrite': system_prompt_rewritepro,
+                        'user_prompt_rewrite': "Rewrite the following title:",
+                        'max_tokens_rewrite': max_tokens_rewritepro,
+                        'temperature_rewrite': temperature_rewritepro,
+                        'top_p_rewrite': top_p_rewritepro,
+                        'min_p_rewrite': min_p_rewritepro,
+                        'top_k_rewrite': top_k_rewritepro,
+                        'presence_penalty_rewrite': presence_penalty_rewritepro,
+                        'frequency_penalty_rewrite': frequency_penalty_rewritepro,
+                        'repetition_penalty_rewrite': repetition_penalty_rewritepro,
+                        'threshold': 7.0  # Порог оценки
+                    }
+
+                    # Фильтруем DataFrame для выбранных строк
+                    df_selected = df_rewrite[df_rewrite[id_col_rewrite].isin(selected_ids)].copy()
+
+                    # Создаём прогресс-бар
+                    progress_bar_rewrite = st.progress(0)
+                    total_selected = len(df_selected)
+                    processed = 0
+
+                    for idx, row in df_selected.iterrows():
                         rewrite_text = row[title_col_rewrite]
                         st.info(f"Переписываем строку ID: {row[id_col_rewrite]}")
                         # Проверка типа row_text
@@ -1123,31 +1132,36 @@ with tabs[2]:
                             continue
 
                         new_rewrite = rewrite_specific_row(
-                            api_key=st.session_state["api_key"],
-                            model=selected_model_rewritepro,
-                            system_prompt=system_prompt_rewritepro,
-                            user_prompt="Rewrite the following title:",
+                            api_key=config['api_key'],
+                            model=config['model_rewrite'],
+                            system_prompt=config['system_prompt_rewrite'],
+                            user_prompt=config['user_prompt_rewrite'],
                             row_text=rewrite_text,
-                            max_tokens=max_tokens_rewritepro,
-                            temperature=temperature_rewritepro,
-                            top_p=top_p_rewritepro,
-                            min_p=min_p_rewritepro,
-                            top_k=top_k_rewritepro,
-                            presence_penalty=presence_penalty_rewritepro,
-                            frequency_penalty=frequency_penalty_rewritepro,
-                            repetition_penalty=repetition_penalty_rewritepro
+                            max_tokens=config['max_tokens_rewrite'],
+                            temperature=config['temperature_rewrite'],
+                            top_p=config['top_p_rewrite'],
+                            min_p=config['min_p_rewrite'],
+                            top_k=config['top_k_rewrite'],
+                            presence_penalty=config['presence_penalty_rewrite'],
+                            frequency_penalty=config['frequency_penalty_rewrite'],
+                            repetition_penalty=config['repetition_penalty_rewrite']
                         )
                         df_rewrite.at[idx, "rewrite"] = new_rewrite
                         # Оцениваем рерайт
                         score = evaluate_rewrite(
-                            api_key=st.session_state["api_key"],
-                            model=selected_model_helper,
+                            api_key=config['api_key'],
+                            model=config['model_evaluate'],
                             rewrite_text=new_rewrite
                         )
                         df_rewrite.at[idx, "status"] = score
                         st.success(f"Рерайт завершён для ID {row[id_col_rewrite]}. Оценка: {score}/10")
+                        processed += 1
+                        progress_bar_rewrite.progress(processed / total_selected)
+
                     # Обновляем session_state
                     st.session_state["df_rewrite"] = df_rewrite.copy()
+                    st.success("Переписывание выбранных строк завершено!")
+
                 except Exception as e:
                     st.error(f"Ошибка при рерайтинге выбранных строк: {e}")
 
@@ -1237,7 +1251,6 @@ with tabs[2]:
 
         st.write("### Логи")
         st.write("Рерайтинг завершен, строк обработано:", len(df_rewrite))
-
 
 ########################################
 # Боковая панель: Ввод API Key
