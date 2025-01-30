@@ -21,7 +21,7 @@ DEFAULT_API_KEY = "sk_MyidbhnT9jXzw-YDymhijjY8NF15O0Qy7C36etNTAxE"
 # Максимальное количество повторных попыток при 429 (Rate Limit)
 MAX_RETRIES = 3
 
-st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
+st.set_page_config(page_title="Novita AI Batch Processor", layout="wide")
 
 #######################################
 # 2) ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -175,6 +175,7 @@ def process_file(
     start_time = time.time()
     lines_processed = 0
 
+    # === Исправленный блок с нормальными отступами: ===
     for start_idx in range(0, total_rows, chunk_size):
         chunk_start_time = time.time()
         end_idx = min(start_idx + chunk_size, total_rows)
@@ -228,6 +229,8 @@ def process_file(
                     est_time_left_min = est_time_left_sec / 60.0
                     time_text = f"~{est_time_left_min:.1f} мин."
                 time_placeholder.info(f"Примерное оставшееся время: {time_text}")
+
+    # === Конец цикла ===
 
     # Создаем копию df с новым столбцом
     df_out = df.copy()
@@ -390,6 +393,8 @@ def process_translation_file(
                     time_text = f"~{est_time_left_min:.1f} мин."
                 time_placeholder.info(f"Примерное оставшееся время: {time_text}")
 
+    # === Конец цикла ===
+
     # Создаем копию df с новым столбцом
     df_out = df.copy()
     df_out["translated_title"] = results
@@ -400,23 +405,108 @@ def process_translation_file(
     return df_out
 
 #######################################
-# 3) ИНТЕРФЕЙС
+# 3) ПРЕСЕТЫ МОДЕЛЕЙ
+#######################################
+
+PRESETS = {
+    "Default": {
+        "system_prompt": "Act like you are a helpful assistant.",
+        "max_tokens": 512,
+        "temperature": 0.70,
+        "top_p": 1.0,
+        "min_p": 0.0,
+        "top_k": 40,
+        "presence_penalty": 0.0,
+        "frequency_penalty": 0.0,
+        "repetition_penalty": 1.0
+    },
+    "NSFW": {
+        "system_prompt": "You are an advanced NSFW content rewriter and evaluator. Generate one vivid and explicit title based on the input, ensuring it stays within 90 characters. The title should align with NSFW standards, SEO relevance, and native fluency.",
+        "max_tokens": 32000,
+        "temperature": 0.70,
+        "top_p": 1.0,
+        "min_p": 0.0,
+        "top_k": 40,
+        "presence_penalty": 0.20,
+        "frequency_penalty": 0.40,
+        "repetition_penalty": 1.22
+    },
+    "Adult_Content_Generator": {
+        "system_prompt": "You are a professional content creator specializing in adult NSFW content. Generate creative and engaging content based on the input provided.",
+        "max_tokens": 2500,
+        "temperature": 0.85,
+        "top_p": 0.95,
+        "min_p": 0.0,
+        "top_k": 50,
+        "presence_penalty": 0.30,
+        "frequency_penalty": 0.50,
+        "repetition_penalty": 1.50
+    },
+    "Erotic_Story_Teller": {
+        "system_prompt": "You are an expert in writing erotic stories. Generate a captivating and tasteful story based on the input provided.",
+        "max_tokens": 5000,
+        "temperature": 0.75,
+        "top_p": 0.90,
+        "min_p": 0.0,
+        "top_k": 60,
+        "presence_penalty": 0.25,
+        "frequency_penalty": 0.35,
+        "repetition_penalty": 1.30
+    }
+    # Можно добавить больше пресетов по необходимости
+}
+
+#######################################
+# 4) ИНТЕРФЕЙС
 #######################################
 
 st.title("🧠 Novita AI Batch Processor")
 
 # Поле ввода API Key, доступное во всех вкладках
-st.sidebar.header("🔧 Настройки API")
-api_key = st.sidebar.text_input("🔑 API Key", value=DEFAULT_API_KEY, type="password")
+st.sidebar.header("Настройки API")
+api_key = st.sidebar.text_input("API Key", value=DEFAULT_API_KEY, type="password")
 
 # Создаем вкладки для разделения функционала
-tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста"])
+tabs = st.tabs(["Обработка текста", "Перевод текста"])
 
 ########################################
 # Вкладка 1: Обработка текста
 ########################################
 with tabs[0]:
     st.header("🔄 Обработка текста")
+
+    # Добавляем выбор пресета
+    st.subheader("🎨 Выбор пресета модели")
+    preset_names = list(PRESETS.keys())
+    selected_preset = st.selectbox("Выберите пресет", preset_names, index=0)
+
+    # Получаем параметры выбранного пресета
+    preset = PRESETS[selected_preset]
+    system_prompt_text = preset["system_prompt"]
+    max_tokens_text = preset["max_tokens"]
+    temperature_text = preset["temperature"]
+    top_p_text = preset["top_p"]
+    min_p_text = preset["min_p"]
+    top_k_text = preset["top_k"]
+    presence_penalty_text = preset["presence_penalty"]
+    frequency_penalty_text = preset["frequency_penalty"]
+    repetition_penalty_text = preset["repetition_penalty"]
+
+    # Кнопка для сброса к стандартным настройкам (опционально)
+    if st.button("Сбросить настройки пресета", key="reset_preset_text"):
+        selected_preset = "Default"
+        preset = PRESETS[selected_preset]
+        system_prompt_text = preset["system_prompt"]
+        max_tokens_text = preset["max_tokens"]
+        temperature_text = preset["temperature"]
+        top_p_text = preset["top_p"]
+        min_p_text = preset["min_p"]
+        top_k_text = preset["top_k"]
+        presence_penalty_text = preset["presence_penalty"]
+        frequency_penalty_text = preset["frequency_penalty"]
+        repetition_penalty_text = preset["repetition_penalty"]
+
+    st.markdown("---")
 
     # Две колонки
     left_col, right_col = st.columns([1, 1])
@@ -425,12 +515,12 @@ with tabs[0]:
     # Левая колонка: Список моделей
     ########################################
     with left_col:
-        st.markdown("#### 🤖 Модели для обработки текста")
+        st.markdown("#### Модели для обработки текста")
         st.caption("Список моделей загружается из API Novita AI")
 
-        if st.button("🔄 Обновить список моделей (Обработка текста)", key="refresh_models_text"):
+        if st.button("Обновить список моделей (Обработка текста)", key="refresh_models_text"):
             if not api_key:
-                st.error("🔑 Ключ API пуст")
+                st.error("Ключ API пуст")
                 model_list_text = []
             else:
                 model_list_text = get_model_list(api_key)
@@ -440,10 +530,10 @@ with tabs[0]:
             st.session_state["model_list_text"] = []
 
         if len(st.session_state["model_list_text"]) > 0:
-            selected_model_text = st.selectbox("🔍 Выберите модель для обработки текста", st.session_state["model_list_text"], key="select_model_text")
+            selected_model_text = st.selectbox("Выберите модель для обработки текста", st.session_state["model_list_text"], key="select_model_text")
         else:
             selected_model_text = st.selectbox(
-                "🔍 Выберите модель для обработки текста",
+                "Выберите модель для обработки текста",
                 ["meta-llama/llama-3.1-8b-instruct", "Nous-Hermes-2-Mixtral-8x7B-DPO"],
                 key="select_model_default_text"
             )
@@ -452,28 +542,19 @@ with tabs[0]:
     # Правая колонка: Настройки генерации
     ########################################
     with right_col:
-        st.markdown("#### ⚙️ Параметры генерации для обработки текста")
-        
-        # Добавление выбора стиля
-        style_options = ["Aggressive", "Artistic", "Playful", "Bold", "Explicit"]
-        selected_style = st.selectbox("🎨 Выберите стиль генерации", style_options, key="selected_style_text")
+        st.markdown("#### Параметры генерации для обработки текста")
 
-        output_format = st.selectbox("📄 Формат вывода", ["csv", "txt"], key="output_format_text")  # CSV или TXT
+        # Здесь пользователи могут изменить параметры пресета при необходимости
+        system_prompt_text = st.text_area("System Prompt", value=system_prompt_text, key="system_prompt_text")
 
-        system_prompt_text = st.text_area(
-            "📜 System Prompt",
-            value="You are an advanced NSFW content rewriter and evaluator. Generate one vivid and explicit title based on the input, ensuring it stays within 90 characters. The title should align with NSFW standards, SEO relevance, and native fluency.",
-            key="system_prompt_text"
-        )
-
-        max_tokens_text = st.slider("🛠 max_tokens", min_value=0, max_value=64000, value=512, step=1, key="max_tokens_text")
-        temperature_text = st.slider("🌡 temperature", min_value=0.0, max_value=2.0, value=0.7, step=0.01, key="temperature_text")
-        top_p_text = st.slider("📊 top_p", min_value=0.0, max_value=1.0, value=1.0, step=0.01, key="top_p_text")
-        min_p_text = st.slider("📉 min_p", min_value=0.0, max_value=1.0, value=0.0, step=0.01, key="min_p_text")
-        top_k_text = st.slider("🔢 top_k", min_value=0, max_value=100, value=40, step=1, key="top_k_text")
-        presence_penalty_text = st.slider("📈 presence_penalty", min_value=0.0, max_value=2.0, value=0.0, step=0.01, key="presence_penalty_text")
-        frequency_penalty_text = st.slider("📉 frequency_penalty", min_value=0.0, max_value=2.0, value=0.0, step=0.01, key="frequency_penalty_text")
-        repetition_penalty_text = st.slider("🔄 repetition_penalty", min_value=0.0, max_value=2.0, value=1.0, step=0.01, key="repetition_penalty_text")
+        max_tokens_text = st.slider("max_tokens", min_value=0, max_value=64000, value=max_tokens_text, step=1, key="max_tokens_text")
+        temperature_text = st.slider("temperature", min_value=0.0, max_value=2.0, value=temperature_text, step=0.01, key="temperature_text")
+        top_p_text = st.slider("top_p", min_value=0.0, max_value=1.0, value=top_p_text, step=0.01, key="top_p_text")
+        min_p_text = st.slider("min_p", min_value=0.0, max_value=1.0, value=min_p_text, step=0.01, key="min_p_text")
+        top_k_text = st.slider("top_k", min_value=0, max_value=100, value=top_k_text, step=1, key="top_k_text")
+        presence_penalty_text = st.slider("presence_penalty", min_value=0.0, max_value=2.0, value=presence_penalty_text, step=0.01, key="presence_penalty_text")
+        frequency_penalty_text = st.slider("frequency_penalty", min_value=0.0, max_value=2.0, value=frequency_penalty_text, step=0.01, key="frequency_penalty_text")
+        repetition_penalty_text = st.slider("repetition_penalty", min_value=0.0, max_value=2.0, value=repetition_penalty_text, step=0.01, key="repetition_penalty_text")
 
     # Разделительная линия
     st.markdown("---")
@@ -482,22 +563,19 @@ with tabs[0]:
     # Поле одиночного промпта (не обязательно)
     ########################################
     st.subheader("📝 Одиночный промпт")
-    user_prompt_single_text = st.text_area("✍️ Введите ваш промпт для одиночной генерации", key="user_prompt_single_text")
+    user_prompt_single_text = st.text_area("Введите ваш промпт для одиночной генерации", key="user_prompt_single_text")
 
-    if st.button("🚀 Отправить одиночный промпт (Обработка текста)", key="submit_single_text"):
+    if st.button("Отправить одиночный промпт (Обработка текста)", key="submit_single_text"):
         if not api_key:
-            st.error("🔑 API Key не указан!")
+            st.error("API Key не указан!")
         elif not user_prompt_single_text.strip():
-            st.error("❌ Промпт не может быть пустым!")
+            st.error("Промпт не может быть пустым!")
         else:
-            # Добавление выбранного стиля в промпт
-            full_user_prompt = f"{selected_style} style: {user_prompt_single_text}"
-            
             from_text = [
                 {"role": "system", "content": system_prompt_text},
-                {"role": "user", "content": full_user_prompt}
+                {"role": "user", "content": user_prompt_single_text}
             ]
-            st.info("⏳ Отправляем запрос...")
+            st.info("Отправляем запрос...")
             raw_response = chat_completion_request(
                 api_key=api_key,
                 messages=from_text,
@@ -513,12 +591,8 @@ with tabs[0]:
             )
             # Можем вызвать custom_postprocess_text, если нужно
             final_response = custom_postprocess_text(raw_response)
-            st.success("✅ Результат получен!")
-            st.text_area("📄 Ответ от модели", value=final_response, height=200)
-            # Сохранение в историю
-            if "history" not in st.session_state:
-                st.session_state["history"] = []
-            st.session_state["history"].append({"prompt": full_user_prompt, "response": final_response})
+            st.success("Результат получен!")
+            st.text_area("Ответ от модели", value=final_response, height=200)
 
     # Разделительная линия
     st.markdown("---")
@@ -528,13 +602,13 @@ with tabs[0]:
     ########################################
     st.subheader("📂 Обработка данных из файла")
 
-    user_prompt_text = st.text_area("✍️ Пользовательский промпт (дополнительно к заголовку)", key="user_prompt_text")
+    user_prompt_text = st.text_area("Пользовательский промпт (дополнительно к заголовку)", key="user_prompt_text")
 
-    st.markdown("##### 🛠 Настройка парсинга TXT/CSV")
-    delimiter_input_text = st.text_input("🔣 Разделитель (delimiter)", value="|", key="delimiter_input_text")
-    column_input_text = st.text_input("📑 Названия колонок (через запятую)", value="id,title", key="column_input_text")
+    st.markdown("##### Настройка парсинга TXT/CSV")
+    delimiter_input_text = st.text_input("Разделитель (delimiter)", value="|", key="delimiter_input_text")
+    column_input_text = st.text_input("Названия колонок (через запятую)", value="id,title", key="column_input_text")
 
-    uploaded_file_text = st.file_uploader("📥 Прикрепить файл (CSV или TXT, до 100000 строк)", type=["csv", "txt"], key="uploaded_file_text")
+    uploaded_file_text = st.file_uploader("Прикрепить файл (CSV или TXT, до 100000 строк)", type=["csv", "txt"], key="uploaded_file_text")
 
     df_text = None
     if uploaded_file_text is not None:
@@ -558,36 +632,33 @@ with tabs[0]:
 
                 df_text = pd.DataFrame(parsed_lines, columns=columns)
 
-            st.write("### 📊 Предпросмотр файла")
+            st.write("### Предпросмотр файла")
             st.dataframe(df_text.head())
         except Exception as e:
-            st.error(f"❌ Ошибка при чтении файла: {e}")
+            st.error(f"Ошибка при чтении файла: {e}")
             df_text = None
 
     if df_text is not None:
         cols_text = df_text.columns.tolist()
-        title_col_text = st.selectbox("🔍 Какая колонка является заголовком?", cols_text, key="title_col_text")
+        title_col_text = st.selectbox("Какая колонка является заголовком?", cols_text, key="title_col_text")
 
         # Ползунок для выбора кол-ва потоков
-        max_workers_text = st.slider("🔄 Потоки (max_workers)", min_value=1, max_value=20, value=5, key="max_workers_text")
+        max_workers_text = st.slider("Потоки (max_workers)", min_value=1, max_value=20, value=5, key="max_workers_text")
 
-        if st.button("🚀 Запустить обработку файла (Обработка текста)", key="process_file_text"):
+        if st.button("Запустить обработку файла (Обработка текста)", key="process_file_text"):
             if not api_key:
-                st.error("🔑 API Key не указан!")
+                st.error("API Key не указан!")
             else:
                 row_count = len(df_text)
                 if row_count > 100000:
-                    st.warning(f"⚠️ Файл содержит {row_count} строк. Это превышает рекомендованный лимит в 100000.")
-                st.info("⏳ Начинаем обработку, пожалуйста подождите...")
-
-                # Добавление выбранного стиля в промпт
-                full_user_prompt = f"{selected_style} style: {user_prompt_text}"
+                    st.warning(f"Файл содержит {row_count} строк. Это превышает рекомендованный лимит в 100000.")
+                st.info("Начинаем обработку, пожалуйста подождите...")
 
                 df_out_text = process_file(
                     api_key=api_key,
                     model=selected_model_text,
                     system_prompt=system_prompt_text,
-                    user_prompt=full_user_prompt,
+                    user_prompt=user_prompt_text,
                     df=df_text,
                     title_col=title_col_text,
                     response_format="csv",  # уже не используем, но пусть есть
@@ -603,69 +674,18 @@ with tabs[0]:
                     max_workers=max_workers_text
                 )
 
-                st.success("✅ Обработка завершена!")
+                st.success("Обработка завершена!")
 
                 # Скачивание
-                if output_format == "csv":
+                if st.session_state.get("output_format_text", "csv") == "csv":
                     csv_out_text = df_out_text.to_csv(index=False).encode("utf-8")
-                    st.download_button("📥 Скачать результат (CSV)", data=csv_out_text, file_name="result.csv", mime="text/csv")
+                    st.download_button("Скачать результат (CSV)", data=csv_out_text, file_name="result.csv", mime="text/csv")
                 else:
                     txt_out_text = df_out_text.to_csv(index=False, sep="|", header=False).encode("utf-8")
-                    st.download_button("📥 Скачать результат (TXT)", data=txt_out_text, file_name="result.txt", mime="text/plain")
+                    st.download_button("Скачать результат (TXT)", data=txt_out_text, file_name="result.txt", mime="text/plain")
 
-                st.write("### 📝 Логи")
-                st.write("✅ Обработка завершена, строк обработано:", len(df_out_text))
-                # Сохранение в историю
-                st.session_state["history"].append({"prompt": full_user_prompt, "response": df_out_text.to_dict()})
-
-    # Добавление предварительной обработки текста
-    if df_text is not None:
-        if st.button("🧹 Предварительно обработать текст", key="preprocess_text"):
-            df_text = preprocess_text(df_text, title_col_text)
-            st.success("✅ Текст предварительно обработан!")
-            st.dataframe(df_text.head())
-
-    # Визуализация результатов
-    if df_text is not None and "rewrite" in df_text.columns:
-        st.markdown("---")
-        st.subheader("📊 Визуализация результатов")
-        visualize_results(df_text, "rewrite")
-
-    ########################################
-    # Дополнительные Важные Функции
-    ########################################
-
-    # 1. Предварительная обработка текста
-    def preprocess_text(df, text_col):
-        """Функция для предварительной обработки текста."""
-        df[text_col] = df[text_col].str.strip().str.lower()
-        return df
-
-    # 2. Сохранение истории запросов
-    if "history" not in st.session_state:
-        st.session_state["history"] = []
-
-    def add_to_history(prompt, response):
-        """Добавляет запрос и ответ в историю."""
-        st.session_state["history"].append({"prompt": prompt, "response": response})
-
-    # 3. Визуализация результатов
-    def visualize_results(df, column):
-        """Функция для визуализации распределения длины заголовков."""
-        df['title_length'] = df[column].apply(len)
-        st.write("### 📈 Распределение длины заголовков")
-        st.bar_chart(df['title_length'].value_counts().sort_index())
-
-    # Добавление раздела истории запросов
-    st.markdown("---")
-    st.subheader("📚 История запросов")
-    if st.session_state["history"]:
-        for entry in st.session_state["history"]:
-            st.write(f"**Промпт:** {entry['prompt']}")
-            st.write(f"**Ответ:** {entry['response']}")
-            st.markdown("---")
-    else:
-        st.info("История запросов пуста.")
+                st.write("### Логи")
+                st.write("Обработка завершена, строк обработано:", len(df_out_text))
 
 ########################################
 # Вкладка 2: Перевод текста
@@ -680,12 +700,12 @@ with tabs[1]:
     # Левая колонка: Список моделей для перевода
     ########################################
     with left_col_trans:
-        st.markdown("#### 🤖 Модели для перевода текста")
+        st.markdown("#### Модели для перевода текста")
         st.caption("Список моделей загружается из API Novita AI")
 
-        if st.button("🔄 Обновить список моделей (Перевод текста)", key="refresh_models_translate"):
+        if st.button("Обновить список моделей (Перевод текста)", key="refresh_models_translate"):
             if not api_key:
-                st.error("🔑 Ключ API пуст")
+                st.error("Ключ API пуст")
                 model_list_translate = []
             else:
                 model_list_translate = get_model_list(api_key)
@@ -695,10 +715,10 @@ with tabs[1]:
             st.session_state["model_list_translate"] = []
 
         if len(st.session_state["model_list_translate"]) > 0:
-            selected_model_translate = st.selectbox("🔍 Выберите модель для перевода текста", st.session_state["model_list_translate"], key="select_model_translate")
+            selected_model_translate = st.selectbox("Выберите модель для перевода текста", st.session_state["model_list_translate"], key="select_model_translate")
         else:
             selected_model_translate = st.selectbox(
-                "🔍 Выберите модель для перевода текста",
+                "Выберите модель для перевода текста",
                 ["meta-llama/llama-3.1-8b-instruct", "Nous-Hermes-2-Mixtral-8x7B-DPO"],
                 key="select_model_default_translate"
             )
@@ -707,28 +727,18 @@ with tabs[1]:
     # Правая колонка: Настройки генерации для перевода
     ########################################
     with right_col_trans:
-        st.markdown("#### ⚙️ Параметры генерации для перевода текста")
-        
-        # Добавление выбора стиля
-        style_options_translate = ["Aggressive", "Artistic", "Playful", "Bold", "Explicit"]
-        selected_style_translate = st.selectbox("🎨 Выберите стиль перевода", style_options_translate, key="selected_style_translate")
-        
-        translate_output_format = st.selectbox("📄 Формат вывода перевода", ["csv", "txt"], key="translate_output_format")  # CSV или TXT
+        st.markdown("#### Параметры генерации для перевода текста")
+        translate_output_format = st.selectbox("Формат вывода перевода", ["csv", "txt"], key="translate_output_format")  # CSV или TXT
+        system_prompt_translate = st.text_area("System Prompt для перевода", value="You are a professional translator.", key="system_prompt_translate")
 
-        system_prompt_translate = st.text_area(
-            "📜 System Prompt для перевода",
-            value="You are a professional translator.",
-            key="system_prompt_translate"
-        )
-
-        max_tokens_translate = st.slider("🛠 max_tokens (перевод)", min_value=0, max_value=64000, value=512, step=1, key="max_tokens_translate")
-        temperature_translate = st.slider("🌡 temperature (перевод)", min_value=0.0, max_value=2.0, value=0.3, step=0.01, key="temperature_translate")
-        top_p_translate = st.slider("📊 top_p (перевод)", min_value=0.0, max_value=1.0, value=1.0, step=0.01, key="top_p_translate")
-        min_p_translate = st.slider("📉 min_p (перевод)", min_value=0.0, max_value=1.0, value=0.0, step=0.01, key="min_p_translate")
-        top_k_translate = st.slider("🔢 top_k (перевод)", min_value=0, max_value=100, value=40, step=1, key="top_k_translate")
-        presence_penalty_translate = st.slider("📈 presence_penalty (перевод)", min_value=0.0, max_value=2.0, value=0.0, step=0.01, key="presence_penalty_translate")
-        frequency_penalty_translate = st.slider("📉 frequency_penalty (перевод)", min_value=0.0, max_value=2.0, value=0.0, step=0.01, key="frequency_penalty_translate")
-        repetition_penalty_translate = st.slider("🔄 repetition_penalty (перевод)", min_value=0.0, max_value=2.0, value=1.0, step=0.01, key="repetition_penalty_translate")
+        max_tokens_translate = st.slider("max_tokens (перевод)", min_value=0, max_value=64000, value=512, step=1, key="max_tokens_translate")
+        temperature_translate = st.slider("temperature (перевод)", min_value=0.0, max_value=2.0, value=0.3, step=0.01, key="temperature_translate")
+        top_p_translate = st.slider("top_p (перевод)", min_value=0.0, max_value=1.0, value=1.0, step=0.01, key="top_p_translate")
+        min_p_translate = st.slider("min_p (перевод)", min_value=0.0, max_value=1.0, value=0.0, step=0.01, key="min_p_translate")
+        top_k_translate = st.slider("top_k (перевод)", min_value=0, max_value=100, value=40, step=1, key="top_k_translate")
+        presence_penalty_translate = st.slider("presence_penalty (перевод)", min_value=0.0, max_value=2.0, value=0.0, step=0.01, key="presence_penalty_translate")
+        frequency_penalty_translate = st.slider("frequency_penalty (перевод)", min_value=0.0, max_value=2.0, value=0.0, step=0.01, key="frequency_penalty_translate")
+        repetition_penalty_translate = st.slider("repetition_penalty (перевод)", min_value=0.0, max_value=2.0, value=1.0, step=0.01, key="repetition_penalty_translate")
 
     # Разделительная линия
     st.markdown("---")
@@ -739,11 +749,11 @@ with tabs[1]:
     st.subheader("📝 Настройки перевода")
 
     languages = ["English", "Chinese", "Japanese", "Hindi"]
-    source_language = st.selectbox("🌐 Исходный язык", languages, index=0, key="source_language")
-    target_language = st.selectbox("🌍 Целевой язык", languages, index=1, key="target_language")
+    source_language = st.selectbox("Исходный язык", languages, index=0, key="source_language")
+    target_language = st.selectbox("Целевой язык", languages, index=1, key="target_language")
 
     if source_language == target_language:
-        st.warning("⚠️ Исходный и целевой языки должны отличаться!")
+        st.warning("Исходный и целевой языки должны отличаться!")
 
     # Разделительная линия
     st.markdown("---")
@@ -753,11 +763,11 @@ with tabs[1]:
     ########################################
     st.subheader("📂 Перевод данных из файла")
 
-    st.markdown("##### 🛠 Настройка парсинга TXT/CSV для перевода")
-    delimiter_input_translate = st.text_input("🔣 Разделитель (delimiter) для перевода", value="|", key="delimiter_input_translate")
-    column_input_translate = st.text_input("📑 Названия колонок (через запятую) для перевода", value="id,title", key="column_input_translate")
+    st.markdown("##### Настройка парсинга TXT/CSV для перевода")
+    delimiter_input_translate = st.text_input("Разделитель (delimiter) для перевода", value="|", key="delimiter_input_translate")
+    column_input_translate = st.text_input("Названия колонок (через запятую) для перевода", value="id,title", key="column_input_translate")
 
-    uploaded_file_translate = st.file_uploader("📥 Прикрепить файл для перевода (CSV или TXT, до 100000 строк)", type=["csv", "txt"], key="uploaded_file_translate")
+    uploaded_file_translate = st.file_uploader("Прикрепить файл для перевода (CSV или TXT, до 100000 строк)", type=["csv", "txt"], key="uploaded_file_translate")
 
     df_translate = None
     if uploaded_file_translate is not None:
@@ -781,35 +791,35 @@ with tabs[1]:
 
                 df_translate = pd.DataFrame(parsed_lines_translate, columns=columns_translate)
 
-            st.write("### 📊 Предпросмотр файла для перевода")
+            st.write("### Предпросмотр файла для перевода")
             st.dataframe(df_translate.head())
         except Exception as e:
-            st.error(f"❌ Ошибка при чтении файла для перевода: {e}")
+            st.error(f"Ошибка при чтении файла для перевода: {e}")
             df_translate = None
 
     if df_translate is not None:
         cols_translate = df_translate.columns.tolist()
-        id_col_translate = st.selectbox("🔍 Какая колонка является ID?", cols_translate, key="id_col_translate")
-        title_col_translate = st.selectbox("🔍 Какая колонка является заголовком для перевода?", cols_translate, key="title_col_translate")
+        id_col_translate = st.selectbox("Какая колонка является ID?", cols_translate, key="id_col_translate")
+        title_col_translate = st.selectbox("Какая колонка является заголовком для перевода?", cols_translate, key="title_col_translate")
 
         # Ползунок для выбора кол-ва потоков
-        max_workers_translate = st.slider("🔄 Потоки (max_workers) для перевода", min_value=1, max_value=20, value=5, key="max_workers_translate")
+        max_workers_translate = st.slider("Потоки (max_workers) для перевода", min_value=1, max_value=20, value=5, key="max_workers_translate")
 
-        if st.button("🚀 Начать перевод", key="start_translation"):
+        if st.button("Начать перевод", key="start_translation"):
             if not api_key:
-                st.error("🔑 API Key не указан!")
+                st.error("API Key не указан!")
             elif source_language == target_language:
-                st.error("⚠️ Исходный и целевой языки должны отличаться!")
+                st.error("Исходный и целевой языки должны отличаться!")
             elif not title_col_translate:
-                st.error("❌ Не выбрана колонка для перевода!")
+                st.error("Не выбрана колонка для перевода!")
             else:
                 row_count_translate = len(df_translate)
                 if row_count_translate > 100000:
-                    st.warning(f"⚠️ Файл содержит {row_count_translate} строк. Это превышает рекомендованный лимит в 100000.")
-                st.info("⏳ Начинаем перевод, пожалуйста подождите...")
+                    st.warning(f"Файл содержит {row_count_translate} строк. Это превышает рекомендованный лимит в 100000.")
+                st.info("Начинаем перевод, пожалуйста подождите...")
 
-                # Пользовательский промпт для перевода с учетом стиля
-                user_prompt_translate = f"{selected_style_translate} style: Translate the following text from {source_language} to {target_language}:"
+                # Пользовательский промпт для перевода
+                user_prompt_translate = f"Translate the following text from {source_language} to {target_language}:"
 
                 # Обработка перевода
                 df_translated = process_translation_file(
@@ -831,122 +841,15 @@ with tabs[1]:
                     max_workers=max_workers_translate
                 )
 
-                st.success("✅ Перевод завершен!")
+                st.success("Перевод завершен!")
 
                 # Скачивание
                 if translate_output_format == "csv":
                     csv_translated = df_translated.to_csv(index=False).encode("utf-8")
-                    st.download_button("📥 Скачать переведенный файл (CSV)", data=csv_translated, file_name="translated_result.csv", mime="text/csv")
+                    st.download_button("Скачать переведенный файл (CSV)", data=csv_translated, file_name="translated_result.csv", mime="text/csv")
                 else:
                     txt_translated = df_translated.to_csv(index=False, sep="|", header=False).encode("utf-8")
-                    st.download_button("📥 Скачать переведенный файл (TXT)", data=txt_translated, file_name="translated_result.txt", mime="text/plain")
+                    st.download_button("Скачать переведенный файл (TXT)", data=txt_translated, file_name="translated_result.txt", mime="text/plain")
 
-                st.write("### 📝 Логи")
-                st.write("✅ Перевод завершен, строк переведено:", len(df_translated))
-                # Сохранение в историю
-                st.session_state["history"].append({"prompt": user_prompt_translate, "response": df_translated.to_dict()})
-
-########################################
-# Дополнительные Важные Функции
-########################################
-
-# 1. Предварительная обработка текста
-def preprocess_text(df, text_col):
-    """Функция для предварительной обработки текста."""
-    df[text_col] = df[text_col].str.strip().str.lower()
-    return df
-
-# 2. Сохранение истории запросов
-if "history" not in st.session_state:
-    st.session_state["history"] = []
-
-def add_to_history(prompt, response):
-    """Добавляет запрос и ответ в историю."""
-    st.session_state["history"].append({"prompt": prompt, "response": response})
-
-# 3. Визуализация результатов
-def visualize_results(df, column):
-    """Функция для визуализации распределения длины заголовков."""
-    df['title_length'] = df[column].apply(len)
-    st.write("### 📈 Распределение длины заголовков")
-    st.bar_chart(df['title_length'].value_counts().sort_index())
-
-# Добавление раздела истории запросов
-st.markdown("---")
-st.subheader("📚 История запросов")
-if st.session_state["history"]:
-    for entry in st.session_state["history"]:
-        st.write(f"**Промпт:** {entry['prompt']}")
-        st.write(f"**Ответ:** {entry['response']}")
-        st.markdown("---")
-else:
-    st.info("История запросов пуста.")
-
-
-# Реализация функции 1: Предварительная обработка текста
-def preprocess_text(df, text_col):
-    """Функция для предварительной обработки текста."""
-    df[text_col] = df[text_col].str.strip().str.lower()
-    return df
-
-# Добавление кнопки для предварительной обработки в вкладке "Обработка текста"
-with tabs[0]:
-    if df_text is not None:
-        if st.button("🧹 Предварительно обработать текст", key="preprocess_text"):
-            df_text = preprocess_text(df_text, title_col_text)
-            st.success("✅ Текст предварительно обработан!")
-            st.dataframe(df_text.head())
-
-# Реализация функции 2: Сохранение истории запросов
-if "history" not in st.session_state:
-    st.session_state["history"] = []
-
-def add_to_history(prompt, response):
-    """Добавляет запрос и ответ в историю."""
-    st.session_state["history"].append({"prompt": prompt, "response": response})
-
-# Вставка вызова функции в одиночный промпт и обработку файла
-with tabs[0]:
-    if st.button("🚀 Отправить одиночный промпт (Обработка текста)", key="submit_single_text"):
-        # ... существующий код ...
-        final_response = custom_postprocess_text(raw_response)
-        add_to_history(full_user_prompt, final_response)
-        # ... остальной код ...
-
-    if st.button("🚀 Запустить обработку файла (Обработка текста)", key="process_file_text"):
-        # ... существующий код ...
-        df_out_text = process_file(...)
-        add_to_history(full_user_prompt, df_out_text.to_dict())
-        # ... остальной код ...
-
-with tabs[1]:
-    if st.button("🚀 Начать перевод", key="start_translation"):
-        # ... существующий код ...
-        df_translated = process_translation_file(...)
-        add_to_history(user_prompt_translate, df_translated.to_dict())
-        # ... остальной код ...
-
-    # Добавление раздела истории
-    st.markdown("---")
-    st.subheader("📚 История запросов")
-    if st.session_state["history"]:
-        for entry in st.session_state["history"]:
-            st.write(f"**Промпт:** {entry['prompt']}")
-            st.write(f"**Ответ:** {entry['response']}")
-            st.markdown("---")
-    else:
-        st.info("История запросов пуста.")
-
-# Реализация функции 3: Визуализация результатов
-def visualize_results(df, column):
-    """Функция для визуализации распределения длины заголовков."""
-    df['title_length'] = df[column].apply(len)
-    st.write("### 📈 Распределение длины заголовков")
-    st.bar_chart(df['title_length'].value_counts().sort_index())
-
-# Добавление визуализации в вкладку "Обработка текста"
-with tabs[0]:
-    if df_text is not None and "rewrite" in df_text.columns:
-        st.markdown("---")
-        st.subheader("📊 Визуализация результатов")
-        visualize_results(df_text, "rewrite")
+                st.write("### Логи")
+                st.write("Перевод завершен, строк переведено:", len(df_translated))
