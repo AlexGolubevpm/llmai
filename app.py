@@ -209,7 +209,10 @@ def process_file(
 
             for future in concurrent.futures.as_completed(future_to_i):
                 i = future_to_i[future]
-                chunk_results[i] = future.result()
+                try:
+                    chunk_results[i] = future.result()
+                except Exception as e:
+                    chunk_results[i] = f"Ошибка: {e}"
 
         # Расширяем общий список результатов
         results.extend(chunk_results)
@@ -372,7 +375,10 @@ def process_translation_file(
 
             for future in concurrent.futures.as_completed(future_to_i):
                 i = future_to_i[future]
-                chunk_results[i] = future.result()
+                try:
+                    chunk_results[i] = future.result()
+                except Exception as e:
+                    chunk_results[i] = f"Ошибка: {e}"
 
         # Расширяем общий список результатов
         results.extend(chunk_results)
@@ -626,28 +632,31 @@ with tabs[0]:
         elif not user_prompt_single_text.strip():
             st.error("Промпт не может быть пустым!")
         else:
-            from_text = [
-                {"role": "system", "content": system_prompt_text},
-                {"role": "user", "content": user_prompt_single_text}
-            ]
-            st.info("Отправляем запрос...")
-            raw_response = chat_completion_request(
-                api_key=st.session_state["api_key"],
-                messages=from_text,
-                model=selected_model_text,
-                max_tokens=max_tokens_text,
-                temperature=temperature_text,
-                top_p=top_p_text,
-                min_p=min_p_text,
-                top_k=top_k_text,
-                presence_penalty=presence_penalty_text,
-                frequency_penalty=frequency_penalty_text,
-                repetition_penalty=repetition_penalty_text
-            )
-            # Можем вызвать custom_postprocess_text, если нужно
-            final_response = custom_postprocess_text(raw_response)
-            st.success("Результат получен!")
-            st.text_area("Ответ от модели", value=final_response, height=200)
+            try:
+                from_text = [
+                    {"role": "system", "content": system_prompt_text},
+                    {"role": "user", "content": user_prompt_single_text}
+                ]
+                st.info("Отправляем запрос...")
+                raw_response = chat_completion_request(
+                    api_key=st.session_state["api_key"],
+                    messages=from_text,
+                    model=selected_model_text,
+                    max_tokens=max_tokens_text,
+                    temperature=temperature_text,
+                    top_p=top_p_text,
+                    min_p=min_p_text,
+                    top_k=top_k_text,
+                    presence_penalty=presence_penalty_text,
+                    frequency_penalty=frequency_penalty_text,
+                    repetition_penalty=repetition_penalty_text
+                )
+                # Можем вызвать custom_postprocess_text, если нужно
+                final_response = custom_postprocess_text(raw_response)
+                st.success("Результат получен!")
+                st.text_area("Ответ от модели", value=final_response, height=200)
+            except Exception as e:
+                st.error(f"Ошибка при обработке одиночного промпта: {e}")
 
     # Разделительная линия
     st.markdown("---")
@@ -704,43 +713,46 @@ with tabs[0]:
             if not st.session_state.get("api_key"):
                 st.error("API Key не указан!")
             else:
-                row_count = len(df_text)
-                if row_count > 100000:
-                    st.warning(f"Файл содержит {row_count} строк. Это превышает рекомендованный лимит в 100000.")
-                st.info("Начинаем обработку, пожалуйста подождите...")
+                try:
+                    row_count = len(df_text)
+                    if row_count > 100000:
+                        st.warning(f"Файл содержит {row_count} строк. Это превышает рекомендованный лимит в 100000.")
+                    st.info("Начинаем обработку, пожалуйста подождите...")
 
-                df_out_text = process_file(
-                    api_key=st.session_state["api_key"],
-                    model=selected_model_text,
-                    system_prompt=system_prompt_text,
-                    user_prompt=user_prompt_text,
-                    df=df_text,
-                    title_col=title_col_text,
-                    response_format="csv",  # уже не используем, но пусть есть
-                    max_tokens=max_tokens_text,
-                    temperature=temperature_text,
-                    top_p=top_p_text,
-                    min_p=min_p_text,
-                    top_k=top_k_text,
-                    presence_penalty=presence_penalty_text,
-                    frequency_penalty=frequency_penalty_text,
-                    repetition_penalty=repetition_penalty_text,
-                    chunk_size=10,  # фиксируем 10 строк в чанке
-                    max_workers=max_workers_text
-                )
+                    df_out_text = process_file(
+                        api_key=st.session_state["api_key"],
+                        model=selected_model_text,
+                        system_prompt=system_prompt_text,
+                        user_prompt=user_prompt_text,
+                        df=df_text,
+                        title_col=title_col_text,
+                        response_format="csv",  # уже не используем, но пусть есть
+                        max_tokens=max_tokens_text,
+                        temperature=temperature_text,
+                        top_p=top_p_text,
+                        min_p=min_p_text,
+                        top_k=top_k_text,
+                        presence_penalty=presence_penalty_text,
+                        frequency_penalty=frequency_penalty_text,
+                        repetition_penalty=repetition_penalty_text,
+                        chunk_size=10,  # фиксируем 10 строк в чанке
+                        max_workers=max_workers_text
+                    )
 
-                st.success("Обработка завершена!")
+                    st.success("Обработка завершена!")
 
-                # Скачивание
-                if output_format == "csv":
-                    csv_out_text = df_out_text.to_csv(index=False).encode("utf-8")
-                    st.download_button("Скачать результат (CSV)", data=csv_out_text, file_name="result.csv", mime="text/csv")
-                else:
-                    txt_out_text = df_out_text.to_csv(index=False, sep="|", header=False).encode("utf-8")
-                    st.download_button("Скачать результат (TXT)", data=txt_out_text, file_name="result.txt", mime="text/plain")
+                    # Скачивание
+                    if output_format == "csv":
+                        csv_out_text = df_out_text.to_csv(index=False).encode("utf-8")
+                        st.download_button("Скачать результат (CSV)", data=csv_out_text, file_name="result.csv", mime="text/csv")
+                    else:
+                        txt_out_text = df_out_text.to_csv(index=False, sep="|", header=False).encode("utf-8")
+                        st.download_button("Скачать результат (TXT)", data=txt_out_text, file_name="result.txt", mime="text/plain")
 
-                st.write("### Логи")
-                st.write("Обработка завершена, строк обработано:", len(df_out_text))
+                    st.write("### Логи")
+                    st.write("Обработка завершена, строк обработано:", len(df_out_text))
+                except Exception as e:
+                    st.error(f"Ошибка при обработке файла: {e}")
 
 ########################################
 # Вкладка 2: Перевод текста
@@ -866,46 +878,49 @@ with tabs[1]:
             elif source_language == target_language:
                 st.error("Исходный и целевой языки должны отличаться!")
             else:
-                row_count_translate = len(df_translate)
-                if row_count_translate > 100000:
-                    st.warning(f"Файл содержит {row_count_translate} строк. Это превышает рекомендованный лимит в 100000.")
-                st.info("Начинаем перевод, пожалуйста подождите...")
+                try:
+                    row_count_translate = len(df_translate)
+                    if row_count_translate > 100000:
+                        st.warning(f"Файл содержит {row_count_translate} строк. Это превышает рекомендованный лимит в 100000.")
+                    st.info("Начинаем перевод, пожалуйста подождите...")
 
-                # Пользовательский промпт для перевода
-                user_prompt_translate = f"Translate the following text from {source_language} to {target_language}:"
+                    # Пользовательский промпт для перевода
+                    user_prompt_translate = f"Translate the following text from {source_language} to {target_language}:"
 
-                # Обработка перевода
-                df_translated = process_translation_file(
-                    api_key=st.session_state["api_key"],
-                    model=selected_model_translate,
-                    system_prompt=system_prompt_translate,
-                    user_prompt=user_prompt_translate,
-                    df=df_translate,
-                    title_col=title_col_translate,
-                    max_tokens=max_tokens_translate,
-                    temperature=temperature_translate,
-                    top_p=top_p_translate,
-                    min_p=min_p_translate,
-                    top_k=top_k_translate,
-                    presence_penalty=presence_penalty_translate,
-                    frequency_penalty=frequency_penalty_translate,
-                    repetition_penalty=repetition_penalty_translate,
-                    chunk_size=10,
-                    max_workers=max_workers_translate
-                )
+                    # Обработка перевода
+                    df_translated = process_translation_file(
+                        api_key=st.session_state["api_key"],
+                        model=selected_model_translate,
+                        system_prompt=system_prompt_translate,
+                        user_prompt=user_prompt_translate,
+                        df=df_translate,
+                        title_col=title_col_translate,
+                        max_tokens=max_tokens_translate,
+                        temperature=temperature_translate,
+                        top_p=top_p_translate,
+                        min_p=min_p_translate,
+                        top_k=top_k_translate,
+                        presence_penalty=presence_penalty_translate,
+                        frequency_penalty=frequency_penalty_translate,
+                        repetition_penalty=repetition_penalty_translate,
+                        chunk_size=10,
+                        max_workers=max_workers_translate
+                    )
 
-                st.success("Перевод завершен!")
+                    st.success("Перевод завершен!")
 
-                # Скачивание
-                if translate_output_format == "csv":
-                    csv_translated = df_translated.to_csv(index=False).encode("utf-8")
-                    st.download_button("Скачать переведенный файл (CSV)", data=csv_translated, file_name="translated_result.csv", mime="text/csv")
-                else:
-                    txt_translated = df_translated.to_csv(index=False, sep="|", header=False).encode("utf-8")
-                    st.download_button("Скачать переведенный файл (TXT)", data=txt_translated, file_name="translated_result.txt", mime="text/plain")
+                    # Скачивание
+                    if translate_output_format == "csv":
+                        csv_translated = df_translated.to_csv(index=False).encode("utf-8")
+                        st.download_button("Скачать переведенный файл (CSV)", data=csv_translated, file_name="translated_result.csv", mime="text/csv")
+                    else:
+                        txt_translated = df_translated.to_csv(index=False, sep="|", header=False).encode("utf-8")
+                        st.download_button("Скачать переведенный файл (TXT)", data=txt_translated, file_name="translated_result.txt", mime="text/plain")
 
-                st.write("### Логи")
-                st.write("Перевод завершен, строк переведено:", len(df_translated))
+                    st.write("### Логи")
+                    st.write("Перевод завершен, строк переведено:", len(df_translated))
+                except Exception as e:
+                    st.error(f"Ошибка при переводе файла: {e}")
 
 ########################################
 # Вкладка 3: RewritePro
@@ -1105,32 +1120,39 @@ with tabs[2]:
                 if st.button("Переписать", key=button_key):
                     rewrite_text = row[title_col_rewrite]
                     st.info(f"Переписываем строку ID: {row[id_col_rewrite]}")
-                    new_rewrite = rewrite_specific_row(
-                        api_key=st.session_state["api_key"],
-                        model=selected_model_rewritepro,
-                        system_prompt=system_prompt_rewritepro,
-                        user_prompt="Rewrite the following title:",
-                        row_text=rewrite_text,  # Убедитесь, что здесь нет запятой
-                        max_tokens=max_tokens_rewritepro,
-                        temperature=temperature_rewritepro,
-                        top_p=top_p_rewritepro,
-                        min_p=min_p_rewritepro,
-                        top_k=top_k_rewritepro,
-                        presence_penalty=presence_penalty_rewritepro,
-                        frequency_penalty=frequency_penalty_rewritepro,
-                        repetition_penalty=repetition_penalty_rewritepro
-                    )
-                    df_rewrite.at[idx, "rewrite"] = new_rewrite
-                    # Оцениваем рерайт
-                    score = evaluate_rewrite(
-                        api_key=st.session_state["api_key"],
-                        model=selected_model_helper,
-                        rewrite_text=new_rewrite
-                    )
-                    df_rewrite.at[idx, "status"] = score
-                    st.success(f"Рерайт завершён. Оценка: {score}/10")
-                    # Обновляем session_state
-                    st.session_state["df_rewrite"] = df_rewrite.copy()
+                    try:
+                        # Проверка типа row_text
+                        if not isinstance(rewrite_text, str):
+                            raise TypeError(f"row_text должен быть строкой, а получен {type(rewrite_text)}")
+
+                        new_rewrite = rewrite_specific_row(
+                            api_key=st.session_state["api_key"],
+                            model=selected_model_rewritepro,
+                            system_prompt=system_prompt_rewritepro,
+                            user_prompt="Rewrite the following title:",
+                            row_text=rewrite_text,  # Убедитесь, что здесь нет запятой
+                            max_tokens=max_tokens_rewritepro,
+                            temperature=temperature_rewritepro,
+                            top_p=top_p_rewritepro,
+                            min_p=min_p_rewritepro,
+                            top_k=top_k_rewritepro,
+                            presence_penalty=presence_penalty_rewritepro,
+                            frequency_penalty=frequency_penalty_rewritepro,
+                            repetition_penalty=repetition_penalty_rewritepro
+                        )
+                        df_rewrite.at[idx, "rewrite"] = new_rewrite
+                        # Оцениваем рерайт
+                        score = evaluate_rewrite(
+                            api_key=st.session_state["api_key"],
+                            model=selected_model_helper,
+                            rewrite_text=new_rewrite
+                        )
+                        df_rewrite.at[idx, "status"] = score
+                        st.success(f"Рерайт завершён. Оценка: {score}/10")
+                        # Обновляем session_state
+                        st.session_state["df_rewrite"] = df_rewrite.copy()
+                    except Exception as e:
+                        st.error(f"Ошибка при рерайтинге строки ID {row[id_col_rewrite]}: {e}")
 
         # Разделительная линия
         st.markdown("---")
@@ -1144,17 +1166,20 @@ with tabs[2]:
             if not st.session_state.get("api_key"):
                 st.error("API Key не указан!")
             else:
-                st.info("Начинаем оценку и рерайтинг низко оцененных строк...")
-                df_rewrite = postprocess_rewrites(
-                    api_key=st.session_state["api_key"],
-                    model=selected_model_rewritepro,
-                    df=df_rewrite,
-                    rewrite_col="rewrite",
-                    status_col="status",
-                    threshold=7.0
-                )
-                st.success("Автоматическая оценка и рерайтинг завершены.")
-                st.session_state["df_rewrite"] = df_rewrite.copy()
+                try:
+                    st.info("Начинаем оценку и рерайтинг низко оцененных строк...")
+                    df_rewrite = postprocess_rewrites(
+                        api_key=st.session_state["api_key"],
+                        model=selected_model_rewritepro,
+                        df=df_rewrite,
+                        rewrite_col="rewrite",
+                        status_col="status",
+                        threshold=7.0
+                    )
+                    st.success("Автоматическая оценка и рерайтинг завершены.")
+                    st.session_state["df_rewrite"] = df_rewrite.copy()
+                except Exception as e:
+                    st.error(f"Ошибка при автоматической оценке и рерайтинге: {e}")
 
         # Разделительная линия
         st.markdown("---")
@@ -1171,21 +1196,24 @@ with tabs[2]:
             elif not words_input.strip():
                 st.error("Пожалуйста, введите хотя бы одно слово.")
             else:
-                words = [word.strip() for word in words_input.split(",") if word.strip()]
-                if not words:
-                    st.error("Пожалуйста, введите хотя бы одно валидное слово.")
-                else:
-                    st.info("Начинаем переписывание строк, содержащих указанные слова...")
-                    df_rewrite = postprocess_by_words(
-                        api_key=st.session_state["api_key"],
-                        model=selected_model_rewritepro,
-                        df=df_rewrite,
-                        rewrite_col="rewrite",
-                        status_col="status",
-                        words=words
-                    )
-                    st.success("Переписывание завершено.")
-                    st.session_state["df_rewrite"] = df_rewrite.copy()
+                try:
+                    words = [word.strip() for word in words_input.split(",") if word.strip()]
+                    if not words:
+                        st.error("Пожалуйста, введите хотя бы одно валидное слово.")
+                    else:
+                        st.info("Начинаем переписывание строк, содержащих указанные слова...")
+                        df_rewrite = postprocess_by_words(
+                            api_key=st.session_state["api_key"],
+                            model=selected_model_rewritepro,
+                            df=df_rewrite,
+                            rewrite_col="rewrite",
+                            status_col="status",
+                            words=words
+                        )
+                        st.success("Переписывание завершено.")
+                        st.session_state["df_rewrite"] = df_rewrite.copy()
+                except Exception as e:
+                    st.error(f"Ошибка при постобработке по словам: {e}")
 
         # Разделительная линия
         st.markdown("---")
@@ -1198,11 +1226,17 @@ with tabs[2]:
         download_format_rewrite = st.selectbox("Формат скачивания файла", ["csv", "txt"], key="download_format_rewrite")
 
         if download_format_rewrite == "csv":
-            csv_rewrite = df_rewrite.to_csv(index=False).encode("utf-8")
-            st.download_button("Скачать файл (CSV)", data=csv_rewrite, file_name="rewrite_result.csv", mime="text/csv")
+            try:
+                csv_rewrite = df_rewrite.to_csv(index=False).encode("utf-8")
+                st.download_button("Скачать файл (CSV)", data=csv_rewrite, file_name="rewrite_result.csv", mime="text/csv")
+            except Exception as e:
+                st.error(f"Ошибка при создании CSV файла: {e}")
         else:
-            txt_rewrite = df_rewrite.to_csv(index=False, sep="|", header=True).encode("utf-8")
-            st.download_button("Скачать файл (TXT)", data=txt_rewrite, file_name="rewrite_result.txt", mime="text/plain")
+            try:
+                txt_rewrite = df_rewrite.to_csv(index=False, sep="|", header=True).encode("utf-8")
+                st.download_button("Скачать файл (TXT)", data=txt_rewrite, file_name="rewrite_result.txt", mime="text/plain")
+            except Exception as e:
+                st.error(f"Ошибка при создании TXT файла: {e}")
 
         st.write("### Логи")
         st.write("Рерайтинг завершен, строк обработано:", len(df_rewrite))
