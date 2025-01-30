@@ -142,7 +142,7 @@ def process_single_row(
         repetition_penalty
     )
 
-    # Постобработка: убираем banned words
+    # Постобработка: убираем запрещённые слова
     final_response = custom_postprocess_text(raw_response)
     return final_response
 
@@ -274,7 +274,7 @@ def translate_completion_request(
         repetition_penalty
     )
 
-    # Постобработка: убираем banned words
+    # Постобработка: убираем запрещённые слова
     final_response = custom_postprocess_text(raw_response)
     return final_response
 
@@ -435,7 +435,7 @@ def evaluate_rewrite(api_key: str, model: str, rewrite_text: str) -> float:
         min_p=0.0,
         top_k=40,
         presence_penalty=0.0,
-        frequency_penalty=0.0,
+        frequency_penalty=frequency_penalty,
         repetition_penalty=1.0
     )
 
@@ -482,6 +482,7 @@ def postprocess_rewrites(
     api_key: str,
     model: str,
     df: pd.DataFrame,
+    id_col: str,
     rewrite_col: str,
     status_col: str,
     threshold: float = 7.0
@@ -494,7 +495,7 @@ def postprocess_rewrites(
         current_score = row[status_col]
         if current_score < threshold:
             original_text = row[rewrite_col]
-            st.info(f"Переписываем строку ID: {row['id']} с оценкой {current_score}/10")
+            st.info(f"Переписываем строку ID: {row[id_col]} с оценкой {current_score}/10")
             # Рерайтим текст
             new_rewrite = rewrite_specific_row(
                 api_key=api_key,
@@ -519,13 +520,14 @@ def postprocess_rewrites(
                 rewrite_text=new_rewrite
             )
             df_out.at[idx, status_col] = new_score
-            st.success(f"Рерайт завершён для ID {row['id']}. Новая оценка: {new_score}/10")
+            st.success(f"Рерайт завершён для ID {row[id_col]}. Оценка: {new_score}/10")
     return df_out
 
 def postprocess_by_words(
     api_key: str,
     model: str,
     df: pd.DataFrame,
+    id_col: str,
     rewrite_col: str,
     status_col: str,
     words: list
@@ -537,7 +539,7 @@ def postprocess_by_words(
     for idx, row in df_out.iterrows():
         text = row[rewrite_col]
         if any(word.lower() in text.lower() for word in words):
-            st.info(f"Переписываем строку ID: {row['id']} содержащую слова {words}")
+            st.info(f"Переписываем строку ID: {row[id_col]} содержащую слова {words}")
             # Рерайтим текст
             new_rewrite = rewrite_specific_row(
                 api_key=api_key,
@@ -562,7 +564,7 @@ def postprocess_by_words(
                 rewrite_text=new_rewrite
             )
             df_out.at[idx, status_col] = new_score
-            st.success(f"Рерайт завершён для ID {row['id']}. Новая оценка: {new_score}/10")
+            st.success(f"Рерайт завершён для ID {row[id_col]}. Оценка: {new_score}/10")
     return df_out
 
 #######################################
@@ -1078,12 +1080,11 @@ with tabs[2]:
         st.write(df_rewrite.dtypes)
         st.write(df_rewrite.head())
 
-        # Отображение таблицы с AgGrid
+        # Отображение таблицы с возможностью выбора строк
         st.write("### Таблица для рерайтинга")
 
-        # Используем стандартные компоненты Streamlit вместо AgGrid
         # Выводим таблицу с возможностью выбора строк
-        st.write(df_rewrite)
+        st.dataframe(df_rewrite)
 
         # Выбор строк для рерайтинга
         st.markdown("### Выбор строк для рерайтинга")
@@ -1183,6 +1184,7 @@ with tabs[2]:
                         api_key=st.session_state["api_key"],
                         model=selected_model_rewritepro,
                         df=df_rewrite,
+                        id_col=id_col_rewrite,
                         rewrite_col="rewrite",
                         status_col="status",
                         threshold=7.0
@@ -1217,6 +1219,7 @@ with tabs[2]:
                             api_key=st.session_state["api_key"],
                             model=selected_model_rewritepro,
                             df=df_rewrite,
+                            id_col=id_col_rewrite,
                             rewrite_col="rewrite",
                             status_col="status",
                             words=words
@@ -1262,3 +1265,4 @@ if "api_key" not in st.session_state:
 with st.sidebar:
     st.header("🔑 Настройки API")
     st.session_state["api_key"] = st.text_input("API Key", value=st.session_state["api_key"], type="password")
+
