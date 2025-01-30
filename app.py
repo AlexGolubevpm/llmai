@@ -5,7 +5,7 @@ import pandas as pd
 import time
 import concurrent.futures
 import re
-from streamlit import components
+import streamlit.components.v1 as components
 
 #######################################
 # 1) НАСТРОЙКИ ПРИЛОЖЕНИЯ
