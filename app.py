@@ -435,7 +435,7 @@ def evaluate_rewrite(api_key: str, model: str, rewrite_text: str) -> float:
         min_p=0.0,
         top_k=40,
         presence_penalty=0.0,
-        frequency_penalty=frequency_penalty,
+        frequency_penalty=0.0,  # Исправлено: добавлено frequency_penalty
         repetition_penalty=1.0
     )
 
@@ -1265,4 +1265,3 @@ if "api_key" not in st.session_state:
 with st.sidebar:
     st.header("🔑 Настройки API")
     st.session_state["api_key"] = st.text_input("API Key", value=st.session_state["api_key"], type="password")
-
