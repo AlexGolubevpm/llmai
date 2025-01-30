@@ -5,7 +5,6 @@ import pandas as pd
 import time
 import concurrent.futures
 import re
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 
 #######################################
 # 1) НАСТРОЙКИ ПРИЛОЖЕНИЯ
@@ -1038,6 +1037,9 @@ with tabs[2]:
         if "status" not in df_rewrite.columns:
             df_rewrite["status"] = 0.0
 
+        # Ограничение отображения до 50 строк
+        display_rows = df_rewrite.head(50).copy()
+
         # Сохранение DataFrame в session_state для дальнейшего обновления
         if "df_rewrite" not in st.session_state:
             st.session_state["df_rewrite"] = df_rewrite.copy()
@@ -1048,71 +1050,56 @@ with tabs[2]:
 
         df_rewrite = st.session_state["df_rewrite"]
 
+        # Ограничение до 50 строк для отображения
+        display_rows = df_rewrite.head(50).copy()
+
         # Отображение таблицы с кнопками для рерайтинга
         st.write("### Таблица для рерайтинга")
 
-        # Настройка AgGrid
-        gb = GridOptionsBuilder.from_dataframe(df_rewrite)
-        gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=50)  # Отображать 50 строк на странице
-        gb.configure_side_bar()
-        gb.configure_default_column(editable=False, sortable=True, filter=True)
-        # Добавление кнопки "Переписать" в каждую строку
-        gb.configure_column("rewrite", editable=False)
-        gb.configure_column("status", editable=False)
-        gb.configure_column("rewrite_button", headerName="", cellRenderer='''function(params) {
-            return '<button style="padding: 5px 10px;">Переписать</button>';
-        }''', width=120)
-        gridOptions = gb.build()
-
-        # Отображение таблицы с AgGrid
-        grid_response = AgGrid(
-            df_rewrite,
-            gridOptions=gridOptions,
-            height=500,
-            width='100%',
-            update_mode=GridUpdateMode.SELECTION_CHANGED,
-            data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
-            fit_columns_on_grid_load=False,
-            allow_unsafe_jscode=True,  # Разрешить выполнение пользовательского JS
-            enable_enterprise_modules=False,
-            theme='light'
-        )
-
-        # Обработка кликов на кнопки "Переписать"
-        for event in grid_response['selected_rows']:
-            if 'rewrite_button' in event:
-                row_id = event[id_col_rewrite]
-                st.info(f"Переписываем строку ID: {row_id}")
-                # Поиск строки по ID
-                row_index = df_rewrite.index[df_rewrite[id_col_rewrite] == row_id].tolist()[0]
-                original_text = df_rewrite.at[row_index, title_col_rewrite]
-                # Рерайтим текст
-                new_rewrite = rewrite_specific_row(
-                    api_key=st.session_state["api_key"],
-                    model=selected_model_rewritepro,
-                    system_prompt=system_prompt_rewritepro,
-                    user_prompt="Rewrite the following title:",
-                    row_text=original_text,
-                    max_tokens=max_tokens_rewritepro,
-                    temperature=temperature_rewritepro,
-                    top_p=top_p_rewritepro,
-                    min_p=min_p_rewritepro,
-                    top_k=top_k_rewritepro,
-                    presence_penalty=presence_penalty_rewritepro,
-                    frequency_penalty=frequency_penalty_rewritepro,
-                    repetition_penalty=repetition_penalty_rewritepro
-                )
-                df_rewrite.at[row_index, "rewrite"] = new_rewrite
-                # Оцениваем рерайт
-                score = evaluate_rewrite(
-                    api_key=st.session_state["api_key"],
-                    model=selected_model_helper,
-                    rewrite_text=new_rewrite
-                )
-                df_rewrite.at[row_index, "status"] = score
-                st.success(f"Рерайт завершён. Оценка: {score}/10")
-                # Обновляем session_state
-                st.session_state["df_rewrite"] = df_rewrite.copy()
+        # Создание таблицы с кнопками
+        for idx, row in display_rows.iterrows():
+            cols = st.columns([1, 2, 3, 3, 1, 1])
+            with cols[0]:
+                st.write(idx + 1)  # Номер строки
+            with cols[1]:
+                st.write(row[id_col_rewrite])  # ID
+            with cols[2]:
+                st.write(row[title_col_rewrite])  # Title
+            with cols[3]:
+                st.write(row["rewrite"])  # Rewrite
+            with cols[4]:
+                st.write(f"{row['status']}/10")  # Оценка
+            with cols[5]:
+                button_key = f"rewrite_button_{idx}"
+                if st.button("Переписать", key=button_key):
+                    rewrite_text = row[title_col_rewrite]
+                    st.info(f"Переписываем строку ID: {row[id_col_rewrite]}")
+                    new_rewrite = rewrite_specific_row(
+                        api_key=st.session_state["api_key"],
+                        model=selected_model_rewritepro,
+                        system_prompt=system_prompt_rewritepro,
+                        user_prompt="Rewrite the following title:",
+                        row_text=rewrite_text,
+                        max_tokens=max_tokens_rewritepro,
+                        temperature=temperature_rewritepro,
+                        top_p=top_p_rewritepro,
+                        min_p=min_p_rewritepro,
+                        top_k=top_k_rewritepro,
+                        presence_penalty=presence_penalty_rewritepro,
+                        frequency_penalty=frequency_penalty_rewritepro,
+                        repetition_penalty=repetition_penalty_rewritepro
+                    )
+                    df_rewrite.at[idx, "rewrite"] = new_rewrite
+                    # Оцениваем рерайт
+                    score = evaluate_rewrite(
+                        api_key=st.session_state["api_key"],
+                        model=selected_model_helper,
+                        rewrite_text=new_rewrite
+                    )
+                    df_rewrite.at[idx, "status"] = score
+                    st.success(f"Рерайт завершён. Оценка: {score}/10")
+                    # Обновляем session_state
+                    st.session_state["df_rewrite"] = df_rewrite.copy()
 
         # Разделительная линия
         st.markdown("---")
