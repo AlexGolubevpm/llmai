@@ -1,11 +1,11 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 import json
 import pandas as pd
 import time
 import concurrent.futures
 import re
-import streamlit.components.v1 as components
 
 #######################################
 # 1) НАСТРОЙКИ ПРИЛОЖЕНИЯ
@@ -31,10 +31,15 @@ st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
 def custom_postprocess_text(text: str) -> str:
     """
     Убираем 'fucking' (в любом регистре) только в начале строки.
-    Если в середине — оставляем.
+    Также удаляем все двойные кавычки из текста.
     """
+    # Удаляем 'fucking' в начале строки
     pattern_start = re.compile(r'^(fucking\s*)', re.IGNORECASE)
     text = pattern_start.sub('', text)
+    
+    # Удаляем все двойные кавычки
+    text = text.replace('"', '')
+    
     return text
 
 def get_model_list(api_key: str):
@@ -142,7 +147,7 @@ def process_single_row(
         repetition_penalty
     )
 
-    # Постобработка: убираем banned words
+    # Постобработка: убираем banned words и двойные кавычки
     final_response = custom_postprocess_text(raw_response)
     return final_response
 
@@ -269,7 +274,7 @@ def translate_completion_request(
         repetition_penalty
     )
 
-    # Постобработка: убираем banned words
+    # Постобработка: убираем banned words и двойные кавычки
     final_response = custom_postprocess_text(raw_response)
     return final_response
 
@@ -463,7 +468,7 @@ st.sidebar.header("🔑 Настройки API")
 api_key = st.sidebar.text_input("API Key", value=DEFAULT_API_KEY, type="password")
 
 # Создаем вкладки для разделения функционала
-tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста", "🎮 Змейка"])
+tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста"])
 
 ########################################
 # Вкладка 1: Обработка текста
@@ -512,11 +517,12 @@ with tabs[0]:
     ########################################
     with left_col:
         st.subheader("📚 Список моделей для обработки текста")
+        st.caption("🔄 Список моделей загружается из API Novita AI")
 
         if st.button("🔄 Обновить список моделей (Обработка текста)", key="refresh_models_text"):
             if not api_key:
                 st.error("❌ Ключ API пуст")
-                model_list_text = []
+                st.session_state["model_list_text"] = []
             else:
                 model_list_text = get_model_list(api_key)
                 st.session_state["model_list_text"] = model_list_text
@@ -739,7 +745,7 @@ with tabs[1]:
         if st.button("🔄 Обновить список моделей (Перевод текста)", key="refresh_models_translate"):
             if not api_key:
                 st.error("❌ Ключ API пуст")
-                model_list_translate = []
+                st.session_state["model_list_translate"] = []
             else:
                 model_list_translate = get_model_list(api_key)
                 st.session_state["model_list_translate"] = model_list_translate
@@ -889,130 +895,3 @@ with tabs[1]:
 
                 st.write("### 📊 Логи")
                 st.write(f"✅ Перевод завершен, строк переведено: {len(df_translated)}")
-
-########################################
-# Вкладка 3: Змейка
-########################################
-with tabs[2]:
-    st.header("🎮 Змейка")
-
-    # Кнопка Старт
-    if st.button("▶️ Старт Змейки", key="start_snake"):
-        st.session_state["play_snake"] = True
-    elif "play_snake" not in st.session_state:
-        st.session_state["play_snake"] = False
-
-    if st.session_state["play_snake"]:
-        st.info("🕹️ Игра запущена! Наслаждайтесь!")
-
-        # Встраиваем игру змейка с использованием HTML и JavaScript
-        snake_game_html = """
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Snake Game</title>
-            <style>
-                body { margin: 0; padding: 0; }
-                canvas { display: block; margin: 0 auto; background: #000; }
-            </style>
-        </head>
-        <body>
-            <canvas id="gameCanvas" width="400" height="400"></canvas>
-            <script>
-                const canvas = document.getElementById('gameCanvas');
-                const ctx = canvas.getContext('2d');
-
-                const grid = 20;
-                let count = 0;
-                let snake = { x: 160, y: 160, cells: [], maxCells: 4 };
-                let apple = { x: 320, y: 320 };
-                let dx = grid;
-                let dy = 0;
-
-                function getRandomInt(min, max) {
-                    return Math.floor(Math.random() * (max - min)) + min;
-                }
-
-                function loop() {
-                    requestAnimationFrame(loop);
-
-                    if (++count < 4) {
-                        return;
-                    }
-
-                    count = 0;
-                    ctx.clearRect(0,0,canvas.width,canvas.height);
-
-                    snake.x += dx;
-                    snake.y += dy;
-
-                    if (snake.x < 0) snake.x = canvas.width - grid;
-                    else if (snake.x >= canvas.width) snake.x = 0;
-                    if (snake.y < 0) snake.y = canvas.height - grid;
-                    else if (snake.y >= canvas.height) snake.y = 0;
-
-                    snake.cells.unshift({x: snake.x, y: snake.y});
-
-                    if (snake.cells.length > snake.maxCells) {
-                        snake.cells.pop();
-                    }
-
-                    ctx.fillStyle = 'red';
-                    ctx.fillRect(apple.x, apple.y, grid-1, grid-1);
-
-                    ctx.fillStyle = 'green';
-                    snake.cells.forEach((cell, index) => {
-                        ctx.fillRect(cell.x, cell.y, grid-1, grid-1);  
-
-                        if (cell.x === apple.x && cell.y === apple.y) {
-                            snake.maxCells++;
-                            apple.x = getRandomInt(0, 20) * grid;
-                            apple.y = getRandomInt(0, 20) * grid;
-                        }
-
-                        for (let i = index + 1; i < snake.cells.length; i++) {
-                            if (cell.x === snake.cells[i].x && cell.y === snake.cells[i].y) {
-                                snake.x = 160;
-                                snake.y = 160;
-                                snake.cells = [];
-                                snake.maxCells = 4;
-                                dx = grid;
-                                dy = 0;
-                                apple.x = getRandomInt(0, 20) * grid;
-                                apple.y = getRandomInt(0, 20) * grid;
-                            }
-                        }
-                    });
-                }
-
-                document.addEventListener('keydown', function(e) {
-                    if (e.which === 37 && dx === 0) {
-                        dx = -grid;
-                        dy = 0;
-                    } else if (e.which === 38 && dy === 0) {
-                        dy = -grid;
-                        dx = 0;
-                    } else if (e.which === 39 && dx === 0) {
-                        dx = grid;
-                        dy = 0;
-                    } else if (e.which === 40 && dy === 0) {
-                        dy = grid;
-                        dx = 0;
-                    }
-                });
-
-                requestAnimationFrame(loop);
-            </script>
-        </body>
-        </html>
-        """
-
-        components.html(snake_game_html, height=420)
-
-    else:
-        st.info("🎮 Нажмите '▶️ Старт Змейки' чтобы начать игру!")
-
-    # Кнопка для остановки игры (перезагрузки страницы)
-    if st.button("⏹️ Остановить Змейку", key="stop_snake"):
-        st.session_state["play_snake"] = False
-        st.experimental_rerun()
