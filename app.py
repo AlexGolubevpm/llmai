@@ -5,6 +5,7 @@ import pandas as pd
 import time
 import concurrent.futures
 import re
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 
 #######################################
 # 1) НАСТРОЙКИ ПРИЛОЖЕНИЯ
@@ -987,87 +988,6 @@ with tabs[2]:
     ########################################
     # Блок загрузки файла для RewritePro
     ########################################
-########################################
-# Вкладка 3: RewritePro
-########################################
-with tabs[2]:
-    st.header("🛠 RewritePro")
-
-    ########################################
-    # Блок выбора моделей для RewritePro
-    ########################################
-    st.subheader("🔧 Настройки моделей RewritePro")
-
-    # Две колонки для выбора моделей и настроек
-    model_col, helper_col = st.columns([1, 1])
-
-    with model_col:
-        st.markdown("#### Модель для рерайтинга")
-        if st.button("Обновить список моделей (RewritePro)", key="refresh_models_rewritepro"):
-            if not st.session_state.get("api_key"):
-                st.error("Ключ API пуст")
-                model_list_rewritepro = []
-            else:
-                model_list_rewritepro = get_model_list(st.session_state["api_key"])
-                st.session_state["model_list_rewritepro"] = model_list_rewritepro
-
-        if "model_list_rewritepro" not in st.session_state:
-            st.session_state["model_list_rewritepro"] = []
-
-        if len(st.session_state["model_list_rewritepro"]) > 0:
-            selected_model_rewritepro = st.selectbox("Выберите модель для рерайтинга", st.session_state["model_list_rewritepro"], key="select_model_rewritepro")
-        else:
-            selected_model_rewritepro = st.selectbox(
-                "Выберите модель для рерайтинга",
-                ["meta-llama/llama-3.1-8b-instruct", "Nous-Hermes-2-Mixtral-8x7B-DPO"],
-                key="select_model_default_rewritepro"
-            )
-
-        # Настройки генерации для рерайтинга
-        st.markdown("##### Параметры генерации для рерайтинга")
-        system_prompt_rewritepro = st.text_area("System Prompt для рерайтинга", value="Act like you are a helpful assistant.", key="system_prompt_rewritepro")
-
-        max_tokens_rewritepro = st.slider("max_tokens (рерайт)", min_value=0, max_value=64000, value=512, step=1, key="max_tokens_rewritepro")
-        temperature_rewritepro = st.slider("temperature (рерайт)", min_value=0.0, max_value=2.0, value=0.7, step=0.01, key="temperature_rewritepro")
-        top_p_rewritepro = st.slider("top_p (рерайт)", min_value=0.0, max_value=1.0, value=1.0, step=0.01, key="top_p_rewritepro")
-        min_p_rewritepro = st.slider("min_p (рерайт)", min_value=0.0, max_value=1.0, value=0.0, step=0.01, key="min_p_rewritepro")
-        top_k_rewritepro = st.slider("top_k (рерайт)", min_value=0, max_value=100, value=40, step=1, key="top_k_rewritepro")
-        presence_penalty_rewritepro = st.slider("presence_penalty (рерайт)", min_value=0.0, max_value=2.0, value=0.0, step=0.01, key="presence_penalty_rewritepro")
-        frequency_penalty_rewritepro = st.slider("frequency_penalty (рерайт)", min_value=0.0, max_value=2.0, value=0.0, step=0.01, key="frequency_penalty_rewritepro")
-        repetition_penalty_rewritepro = st.slider("repetition_penalty (рерайт)", min_value=0.0, max_value=2.0, value=1.0, step=0.01, key="repetition_penalty_rewritepro")
-
-    with helper_col:
-        st.markdown("#### Модель для оценки рерайтинга")
-        if st.button("Обновить список моделей для хелпера", key="refresh_models_helper"):
-            if not st.session_state.get("api_key"):
-                st.error("Ключ API пуст")
-                model_list_helper = []
-            else:
-                model_list_helper = get_model_list(st.session_state["api_key"])
-                st.session_state["model_list_helper"] = model_list_helper
-
-        if "model_list_helper" not in st.session_state:
-            st.session_state["model_list_helper"] = []
-
-        if len(st.session_state["model_list_helper"]) > 0:
-            selected_model_helper = st.selectbox("Выберите модель для оценки рерайтинга", st.session_state["model_list_helper"], key="select_model_helper")
-        else:
-            selected_model_helper = st.selectbox(
-                "Выберите модель для оценки рерайтинга",
-                ["meta-llama/llama-3.1-8b-instruct", "Nous-Hermes-2-Mixtral-8x7B-DPO"],
-                key="select_model_default_helper"
-            )
-
-        # Настройки генерации для хелпера
-        st.markdown("##### Параметры генерации для хелпера")
-        system_prompt_helper = st.text_area("System Prompt для хелпера", value="You are an expert in evaluating text rewrites.", key="system_prompt_helper")
-
-    # Разделительная линия
-    st.markdown("---")
-
-    ########################################
-    # Блок загрузки файла для RewritePro
-    ########################################
     st.subheader("📂 Загрузка файла для рерайтинга")
 
     st.markdown("##### Настройка парсинга TXT/CSV для рерайтинга")
@@ -1078,8 +998,8 @@ with tabs[2]:
 
     df_rewrite = None
     if uploaded_file_rewrite is not None:
-       try: file_extension_rewrite = uploaded_file_rewrite.name.split(".")[-1].lower()
-           
+        file_extension_rewrite = uploaded_file_rewrite.name.split(".")[-1].lower()
+        try:
             if file_extension_rewrite == "csv":
                 df_rewrite = pd.read_csv(uploaded_file_rewrite)
             else:
@@ -1163,12 +1083,11 @@ with tabs[2]:
         # Обработка кликов на кнопки "Переписать"
         # В текущей версии st-aggrid нет прямой поддержки обработки кнопок внутри ячеек,
         # поэтому необходимо использовать пользовательский JavaScript или альтернативные методы.
-        # Для упрощения, можно использовать форму или другой подход.
+        # Для упрощения, можно использовать стандартные кнопки под таблицей.
 
-        # Альтернативный подход: отображение кнопок вне таблицы
         st.write("### Переписать конкретные строки")
         for idx, row in df_rewrite.iterrows():
-            cols = st.columns([1, 3, 3, 1, 1, 1])  # 6 колонок: номер, ID, Title, Rewrite, Оценка, Кнопка
+            cols = st.columns([1, 3, 3, 1, 1, 1])  # Настройка ширины колонок
             with cols[0]:
                 st.write(idx + 1)  # Номер строки
             with cols[1]:
@@ -1179,6 +1098,8 @@ with tabs[2]:
                 st.write(row["rewrite"])  # Rewrite
             with cols[4]:
                 st.write(f"{row['status']}/10")  # Оценка
+
+            # Добавление кнопки "Переписать" рядом с каждой строкой
             with cols[5]:
                 button_key = f"rewrite_button_{idx}"
                 if st.button("Переписать", key=button_key):
@@ -1189,7 +1110,7 @@ with tabs[2]:
                         model=selected_model_rewritepro,
                         system_prompt=system_prompt_rewritepro,
                         user_prompt="Rewrite the following title:",
-                        row_text=rewrite_text,
+                        row_text=rewrite_text,  # Убедитесь, что здесь нет запятой
                         max_tokens=max_tokens_rewritepro,
                         temperature=temperature_rewritepro,
                         top_p=top_p_rewritepro,
@@ -1285,7 +1206,6 @@ with tabs[2]:
 
         st.write("### Логи")
         st.write("Рерайтинг завершен, строк обработано:", len(df_rewrite))
-
 
 ########################################
 # Боковая панель: Ввод API Key
