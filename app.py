@@ -24,7 +24,7 @@ MAX_RETRIES = 3
 st.set_page_config(page_title="Novita AI Batch Processor", layout="wide")
 
 #######################################
-# 2) Вспомогательные ФУНКЦИИ
+# 2) ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 #######################################
 
 def custom_postprocess_text(text: str) -> str:
@@ -35,7 +35,6 @@ def custom_postprocess_text(text: str) -> str:
     pattern_start = re.compile(r'^(fucking\s*)', re.IGNORECASE)
     text = pattern_start.sub('', text)
     return text
-
 
 def get_model_list(api_key: str):
     """Загружаем список доступных моделей через эндпоинт Novita AI"""
@@ -55,7 +54,6 @@ def get_model_list(api_key: str):
     except Exception as e:
         st.error(f"Ошибка при получении списка моделей: {e}")
         return []
-
 
 def chat_completion_request(
     api_key: str,
@@ -109,7 +107,6 @@ def chat_completion_request(
     # Если все попытки исчерпаны
     return "Ошибка: Превышено число попыток при 429 RATE_LIMIT."
 
-
 def process_single_row(
     api_key: str,
     model: str,
@@ -147,7 +144,6 @@ def process_single_row(
     # Постобработка: убираем banned words
     final_response = custom_postprocess_text(raw_response)
     return final_response
-
 
 def process_file(
     api_key: str,
@@ -245,6 +241,176 @@ def process_file(
 
     return df_out
 
+# ======= Новые функции для перевода =======
+
+def translate_completion_request(
+    api_key: str,
+    source_language: str,
+    target_language: str,
+    text: str,
+    model: str,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    min_p: float,
+    top_k: int,
+    presence_penalty: float,
+    frequency_penalty: float,
+    repetition_penalty: float
+):
+    """Функция для перевода текста с retries на 429."""
+    system_prompt = "You are a professional translator."
+    user_prompt = f"Translate the following text from {source_language} to {target_language}:\n{text}"
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ]
+
+    raw_response = chat_completion_request(
+        api_key,
+        messages,
+        model,
+        max_tokens,
+        temperature,
+        top_p,
+        min_p,
+        top_k,
+        presence_penalty,
+        frequency_penalty,
+        repetition_penalty
+    )
+
+    # Постобработка: убираем banned words
+    final_response = custom_postprocess_text(raw_response)
+    return final_response
+
+def process_translation_single_row(
+    api_key: str,
+    model: str,
+    source_language: str,
+    target_language: str,
+    row_text: str,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    min_p: float,
+    top_k: int,
+    presence_penalty: float,
+    frequency_penalty: float,
+    repetition_penalty: float
+):
+    """Функция-обёртка для параллельного вызова перевода."""
+    translated_text = translate_completion_request(
+        api_key=api_key,
+        source_language=source_language,
+        target_language=target_language,
+        text=row_text,
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        min_p=min_p,
+        top_k=top_k,
+        presence_penalty=presence_penalty,
+        frequency_penalty=frequency_penalty,
+        repetition_penalty=repetition_penalty
+    )
+    return translated_text
+
+def process_translation_file(
+    api_key: str,
+    model: str,
+    source_language: str,
+    target_language: str,
+    df: pd.DataFrame,
+    title_col: str,  # Название колонки, которую надо перевести
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    min_p: float,
+    top_k: int,
+    presence_penalty: float,
+    frequency_penalty: float,
+    repetition_penalty: float,
+    chunk_size: int = 10,  # фиксируем 10 строк в чанке
+    max_workers: int = 5  # Количество потоков
+):
+    """Параллельно переводим загруженный файл построчно (или чанками)."""
+
+    progress_bar = st.progress(0)
+    time_placeholder = st.empty()  # для отображения оставшегося времени
+
+    results = []
+    total_rows = len(df)
+
+    start_time = time.time()
+    lines_processed = 0
+
+    for start_idx in range(0, total_rows, chunk_size):
+        chunk_start_time = time.time()
+        end_idx = min(start_idx + chunk_size, total_rows)
+
+        # Берём индексы строк в этом чанке
+        chunk_indices = list(df.index[range(start_idx, end_idx)])
+        chunk_size_actual = len(chunk_indices)
+        chunk_results = [None] * chunk_size_actual
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_i = {}
+            for i, row_idx in enumerate(chunk_indices):
+                row_text = str(df.loc[row_idx, title_col])
+                future = executor.submit(
+                    process_translation_single_row,
+                    api_key,
+                    model,
+                    source_language,
+                    target_language,
+                    row_text,
+                    max_tokens,
+                    temperature,
+                    top_p,
+                    min_p,
+                    top_k,
+                    presence_penalty,
+                    frequency_penalty,
+                    repetition_penalty
+                )
+                future_to_i[future] = i
+
+            for future in concurrent.futures.as_completed(future_to_i):
+                i = future_to_i[future]
+                chunk_results[i] = future.result()
+
+        # Расширяем общий список результатов
+        results.extend(chunk_results)
+
+        lines_processed += chunk_size_actual
+        progress_bar.progress(lines_processed / total_rows)
+
+        time_for_chunk = time.time() - chunk_start_time
+        if chunk_size_actual > 0:
+            time_per_line = time_for_chunk / chunk_size_actual
+            lines_left = total_rows - lines_processed
+            if time_per_line > 0:
+                est_time_left_sec = lines_left * time_per_line
+                if est_time_left_sec < 60:
+                    time_text = f"~{est_time_left_sec:.1f} сек."
+                else:
+                    est_time_left_min = est_time_left_sec / 60.0
+                    time_text = f"~{est_time_left_min:.1f} мин."
+                time_placeholder.info(f"Примерное оставшееся время: {time_text}")
+
+    # === Конец цикла ===
+
+    # Создаем копию df с новым столбцом
+    df_out = df.copy()
+    df_out["translated_title"] = results
+
+    elapsed = time.time() - start_time
+    time_placeholder.success(f"Перевод завершен за {elapsed:.1f} секунд.")
+
+    return df_out
 
 #######################################
 # 4) ИНТЕРФЕЙС
@@ -252,155 +418,83 @@ def process_file(
 
 st.title("🧠 Novita AI Batch Processing")
 
-# Две колонки
-left_col, right_col = st.columns([1, 1])
+# Создаем вкладки для разделения функционала
+tabs = st.tabs(["Обработка текста", "Перевод текста"])
 
 ########################################
-# Левая колонка: Список моделей
+# Вкладка 1: Обработка текста
 ########################################
-with left_col:
-    st.markdown("#### Модели")
-    st.caption("Список моделей загружается из API Novita AI")
+with tabs[0]:
+    # Две колонки
+    left_col, right_col = st.columns([1, 1])
 
-    api_key = st.text_input("API Key", value=DEFAULT_API_KEY, type="password")
+    ########################################
+    # Левая колонка: Список моделей
+    ########################################
+    with left_col:
+        st.markdown("#### Модели")
+        st.caption("Список моделей загружается из API Novita AI")
 
-    if st.button("Обновить список моделей"):
-        if not api_key:
-            st.error("Ключ API пуст")
-            model_list = []
+        api_key = st.text_input("API Key", value=DEFAULT_API_KEY, type="password")
+
+        if st.button("Обновить список моделей"):
+            if not api_key:
+                st.error("Ключ API пуст")
+                model_list = []
+            else:
+                model_list = get_model_list(api_key)
+                st.session_state["model_list"] = model_list
+
+        if "model_list" not in st.session_state:
+            st.session_state["model_list"] = []
+
+        if len(st.session_state["model_list"]) > 0:
+            selected_model = st.selectbox("Выберите модель", st.session_state["model_list"])
         else:
-            model_list = get_model_list(api_key)
-            st.session_state["model_list"] = model_list
+            selected_model = st.selectbox(
+                "Выберите модель",
+                ["meta-llama/llama-3.1-8b-instruct", "Nous-Hermes-2-Mixtral-8x7B-DPO"]
+            )
 
-    if "model_list" not in st.session_state:
-        st.session_state["model_list"] = []
+    ########################################
+    # Правая колонка: Настройки генерации
+    ########################################
+    with right_col:
+        st.markdown("#### Параметры генерации")
+        output_format = st.selectbox("Output Format", ["csv", "txt"])  # CSV или TXT
+        system_prompt = st.text_area("System Prompt", value="Act like you are a helpful assistant.")
 
-    if len(st.session_state["model_list"]) > 0:
-        selected_model = st.selectbox("Выберите модель", st.session_state["model_list"])
-    else:
-        selected_model = st.selectbox(
-            "Выберите модель",
-            ["meta-llama/llama-3.1-8b-instruct", "Nous-Hermes-2-Mixtral-8x7B-DPO"]
-        )
+        max_tokens = st.slider("max_tokens", min_value=0, max_value=64000, value=512, step=1)
+        temperature = st.slider("temperature", min_value=0.0, max_value=2.0, value=0.7, step=0.01)
+        top_p = st.slider("top_p", min_value=0.0, max_value=1.0, value=1.0, step=0.01)
+        min_p = st.slider("min_p", min_value=0.0, max_value=1.0, value=0.0, step=0.01)
+        top_k = st.slider("top_k", min_value=0, max_value=100, value=40, step=1)
+        presence_penalty = st.slider("presence_penalty", min_value=0.0, max_value=2.0, value=0.0, step=0.01)
+        frequency_penalty = st.slider("frequency_penalty", min_value=0.0, max_value=2.0, value=0.0, step=0.01)
+        repetition_penalty = st.slider("repetition_penalty", min_value=0.0, max_value=2.0, value=1.0, step=0.01)
 
-########################################
-# Правая колонка: Настройки генерации
-########################################
-with right_col:
-    st.markdown("#### Параметры генерации")
-    output_format = st.selectbox("Output Format", ["csv", "txt"])  # CSV или TXT
-    system_prompt = st.text_area("System Prompt", value="Act like you are a helpful assistant.")
+    # Разделительная линия
+    st.markdown("---")
 
-    max_tokens = st.slider("max_tokens", min_value=0, max_value=64000, value=512, step=1)
-    temperature = st.slider("temperature", min_value=0.0, max_value=2.0, value=0.7, step=0.01)
-    top_p = st.slider("top_p", min_value=0.0, max_value=1.0, value=1.0, step=0.01)
-    min_p = st.slider("min_p", min_value=0.0, max_value=1.0, value=0.0, step=0.01)
-    top_k = st.slider("top_k", min_value=0, max_value=100, value=40, step=1)
-    presence_penalty = st.slider("presence_penalty", min_value=0.0, max_value=2.0, value=0.0, step=0.01)
-    frequency_penalty = st.slider("frequency_penalty", min_value=0.0, max_value=2.0, value=0.0, step=0.01)
-    repetition_penalty = st.slider("repetition_penalty", min_value=0.0, max_value=2.0, value=1.0, step=0.01)
+    ########################################
+    # Поле одиночного промпта (не обязательно)
+    ########################################
+    st.subheader("Одиночный промпт")
+    user_prompt_single = st.text_area("Введите ваш промпт для одиночной генерации")
 
-# Разделительная линия
-st.markdown("---")
-
-########################################
-# Поле одиночного промпта (не обязательно)
-########################################
-st.subheader("Одиночный промпт")
-user_prompt_single = st.text_area("Введите ваш промпт для одиночной генерации")
-
-if st.button("Отправить одиночный промпт"):
-    if not api_key:
-        st.error("API Key не указан!")
-    else:
-        from_text = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt_single}
-        ]
-        st.info("Отправляем запрос...")
-        raw_response = chat_completion_request(
-            api_key=api_key,
-            messages=from_text,
-            model=selected_model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            min_p=min_p,
-            top_k=top_k,
-            presence_penalty=presence_penalty,
-            frequency_penalty=frequency_penalty,
-            repetition_penalty=repetition_penalty
-        )
-        # Можем вызвать custom_postprocess_text, если нужно
-        final_response = custom_postprocess_text(raw_response)
-        st.success("Результат получен!")
-        st.text_area("Ответ от модели", value=final_response, height=200)
-
-# Разделительная линия
-st.markdown("---")
-
-########################################
-# Блок обработки файла
-########################################
-st.subheader("Обработка данных из файла")
-
-user_prompt = st.text_area("Пользовательский промпт (дополнительно к заголовку)")
-
-st.markdown("##### Настройка парсинга TXT/CSV")
-delimiter_input = st.text_input("Разделитель (delimiter)", value="|")
-column_input = st.text_input("Названия колонок (через запятую)", value="id,title")
-
-uploaded_file = st.file_uploader("Прикрепить файл (CSV или TXT, до 100000 строк)", type=["csv", "txt"])
-
-df = None
-if uploaded_file is not None:
-    file_extension = uploaded_file.name.split(".")[-1]
-    try:
-        if file_extension == "csv":
-            df = pd.read_csv(uploaded_file)
-        else:
-            content = uploaded_file.read().decode("utf-8")
-            lines = content.splitlines()
-
-            columns = [c.strip() for c in column_input.split(",")]
-
-            parsed_lines = []
-            for line in lines:
-                splitted = line.split(delimiter_input, maxsplit=len(columns) - 1)
-                parsed_lines.append(splitted)
-
-            df = pd.DataFrame(parsed_lines, columns=columns)
-
-        st.write("### Предпросмотр файла")
-        st.dataframe(df.head())
-    except Exception as e:
-        st.error(f"Ошибка при чтении файла: {e}")
-        df = None
-
-if df is not None:
-    cols = df.columns.tolist()
-    title_col = st.selectbox("Какая колонка является заголовком?", cols)
-
-    # Ползунок для выбора кол-ва потоков
-    max_workers = st.slider("Потоки (max_workers)", min_value=1, max_value=20, value=5)
-
-    if st.button("Запустить обработку файла"):
+    if st.button("Отправить одиночный промпт"):
         if not api_key:
             st.error("API Key не указан!")
         else:
-            row_count = len(df)
-            if row_count > 100000:
-                st.warning(f"Файл содержит {row_count} строк. Это превышает рекомендованный лимит в 100000.")
-            st.info("Начинаем обработку, пожалуйста подождите...")
-
-            df_out = process_file(
+            from_text = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt_single}
+            ]
+            st.info("Отправляем запрос...")
+            raw_response = chat_completion_request(
                 api_key=api_key,
+                messages=from_text,
                 model=selected_model,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                df=df,
-                title_col=title_col,
-                response_format="csv",  # уже не используем, но пусть есть
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
@@ -408,21 +502,212 @@ if df is not None:
                 top_k=top_k,
                 presence_penalty=presence_penalty,
                 frequency_penalty=frequency_penalty,
-                repetition_penalty=repetition_penalty,
-                chunk_size=10,  # фиксируем 10 строк в чанке
-                max_workers=max_workers
+                repetition_penalty=repetition_penalty
             )
+            # Можем вызвать custom_postprocess_text, если нужно
+            final_response = custom_postprocess_text(raw_response)
+            st.success("Результат получен!")
+            st.text_area("Ответ от модели", value=final_response, height=200)
 
-            st.success("Обработка завершена!")
+    # Разделительная линия
+    st.markdown("---")
 
-            # Скачивание
-            if output_format == "csv":
-                csv_out = df_out.to_csv(index=False).encode("utf-8")
-                st.download_button("Скачать результат (CSV)", data=csv_out, file_name="result.csv", mime="text/csv")
+    ########################################
+    # Блок обработки файла
+    ########################################
+    st.subheader("Обработка данных из файла")
+
+    user_prompt = st.text_area("Пользовательский промпт (дополнительно к заголовку)")
+
+    st.markdown("##### Настройка парсинга TXT/CSV")
+    delimiter_input = st.text_input("Разделитель (delimiter)", value="|")
+    column_input = st.text_input("Названия колонок (через запятую)", value="id,title")
+
+    uploaded_file = st.file_uploader("Прикрепить файл (CSV или TXT, до 100000 строк)", type=["csv", "txt"])
+
+    df = None
+    if uploaded_file is not None:
+        file_extension = uploaded_file.name.split(".")[-1]
+        try:
+            if file_extension == "csv":
+                df = pd.read_csv(uploaded_file)
             else:
-                txt_out = df_out.to_csv(index=False, sep="|", header=False).encode("utf-8")
-                st.download_button("Скачать результат (TXT)", data=txt_out, file_name="result.txt", mime="text/plain")
+                content = uploaded_file.read().decode("utf-8")
+                lines = content.splitlines()
 
-            st.write("### Логи")
-            st.write("Обработка завершена, строк обработано:", len(df_out))
+                columns = [c.strip() for c in column_input.split(",")]
+
+                parsed_lines = []
+                for line in lines:
+                    splitted = line.split(delimiter_input, maxsplit=len(columns) - 1)
+                    parsed_lines.append(splitted)
+
+                df = pd.DataFrame(parsed_lines, columns=columns)
+
+            st.write("### Предпросмотр файла")
+            st.dataframe(df.head())
+        except Exception as e:
+            st.error(f"Ошибка при чтении файла: {e}")
+            df = None
+
+    if df is not None:
+        cols = df.columns.tolist()
+        title_col = st.selectbox("Какая колонка является заголовком?", cols)
+
+        # Ползунок для выбора кол-ва потоков
+        max_workers = st.slider("Потоки (max_workers)", min_value=1, max_value=20, value=5)
+
+        if st.button("Запустить обработку файла"):
+            if not api_key:
+                st.error("API Key не указан!")
+            else:
+                row_count = len(df)
+                if row_count > 100000:
+                    st.warning(f"Файл содержит {row_count} строк. Это превышает рекомендованный лимит в 100000.")
+                st.info("Начинаем обработку, пожалуйста подождите...")
+
+                df_out = process_file(
+                    api_key=api_key,
+                    model=selected_model,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    df=df,
+                    title_col=title_col,
+                    response_format="csv",  # уже не используем, но пусть есть
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    min_p=min_p,
+                    top_k=top_k,
+                    presence_penalty=presence_penalty,
+                    frequency_penalty=frequency_penalty,
+                    repetition_penalty=repetition_penalty,
+                    chunk_size=10,  # фиксируем 10 строк в чанке
+                    max_workers=max_workers
+                )
+
+                st.success("Обработка завершена!")
+
+                # Скачивание
+                if output_format == "csv":
+                    csv_out = df_out.to_csv(index=False).encode("utf-8")
+                    st.download_button("Скачать результат (CSV)", data=csv_out, file_name="result.csv", mime="text/csv")
+                else:
+                    txt_out = df_out.to_csv(index=False, sep="|", header=False).encode("utf-8")
+                    st.download_button("Скачать результат (TXT)", data=txt_out, file_name="result.txt", mime="text/plain")
+
+                st.write("### Логи")
+                st.write("Обработка завершена, строк обработано:", len(df_out))
+
+########################################
+# Вкладка 2: Перевод текста
+########################################
+with tabs[1]:
+    st.subheader("Перевод текста из файла")
+
+    st.markdown("##### Настройка перевода")
+
+    # Загрузка файла
+    translation_uploaded_file = st.file_uploader("Прикрепить файл для перевода (CSV или TXT, до 100000 строк)", type=["csv", "txt"], key="translation_uploader")
+
+    if translation_uploaded_file is not None:
+        file_extension = translation_uploaded_file.name.split(".")[-1]
+        try:
+            if file_extension == "csv":
+                df_translation = pd.read_csv(translation_uploaded_file)
+            else:
+                content = translation_uploaded_file.read().decode("utf-8")
+                lines = content.splitlines()
+
+                # Для перевода предполагается наличие только id и title
+                columns = ["id", "title"]
+                parsed_lines = []
+                for line in lines:
+                    splitted = line.split("|", maxsplit=1)  # предполагаем разделитель "|"
+                    if len(splitted) < 2:
+                        splitted.append("")  # если нет title
+                    parsed_lines.append(splitted)
+
+                df_translation = pd.DataFrame(parsed_lines, columns=columns)
+
+            st.write("### Предпросмотр файла для перевода")
+            st.dataframe(df_translation.head())
+        except Exception as e:
+            st.error(f"Ошибка при чтении файла для перевода: {e}")
+            df_translation = None
+
+    if translation_uploaded_file is not None and 'df_translation' in locals():
+        # Выбор колонок
+        cols_translation = df_translation.columns.tolist()
+        id_col_translation = st.selectbox("Какая колонка является ID?", cols_translation, key="id_col_translation")
+        title_col_translation = st.selectbox("Какая колонка является заголовком для перевода?", cols_translation, key="title_col_translation")
+
+        # Выбор языков
+        languages = ["English", "Chinese", "Japanese", "Hindi"]
+        source_language = st.selectbox("Исходный язык", languages, index=0)
+        target_language = st.selectbox("Целевой язык", languages, index=1)
+
+        if st.button("Начать перевод"):
+            if not api_key:
+                st.error("API Key не указан!")
+            elif source_language == target_language:
+                st.error("Исходный и целевой языки должны отличаться!")
+            else:
+                row_count = len(df_translation)
+                if row_count > 100000:
+                    st.warning(f"Файл содержит {row_count} строк. Это превышает рекомендованный лимит в 100000.")
+                st.info("Начинаем перевод, пожалуйста подождите...")
+
+                # Параметры перевода
+                translate_system_prompt = "You are a professional translator."
+                translate_user_prompt = f"Translate the following text from {source_language} to {target_language}."
+
+                # Используем те же параметры генерации, что и в обработке текста
+                # Можно настроить отдельно, если нужно
+
+                # Для перевода можно использовать меньше max_tokens, например 512
+                translate_max_tokens = 512
+                translate_temperature = 0.3
+                translate_top_p = 1.0
+                translate_min_p = 0.0
+                translate_top_k = 40
+                translate_presence_penalty = 0.0
+                translate_frequency_penalty = 0.0
+                translate_repetition_penalty = 1.0
+
+                # Обработка перевода
+                df_translated = process_translation_file(
+                    api_key=api_key,
+                    model=selected_model,
+                    source_language=source_language,
+                    target_language=target_language,
+                    df=df_translation,
+                    title_col=title_col_translation,
+                    max_tokens=translate_max_tokens,
+                    temperature=translate_temperature,
+                    top_p=translate_top_p,
+                    min_p=translate_min_p,
+                    top_k=translate_top_k,
+                    presence_penalty=translate_presence_penalty,
+                    frequency_penalty=translate_frequency_penalty,
+                    repetition_penalty=translate_repetition_penalty,
+                    chunk_size=10,
+                    max_workers=5
+                )
+
+                st.success("Перевод завершен!")
+
+                # Скачивание
+                translated_output_format = st.selectbox("Формат скачивания переведенного файла", ["csv", "txt"], key="translated_output_format")
+                if translated_output_format == "csv":
+                    csv_translated = df_translated.to_csv(index=False).encode("utf-8")
+                    st.download_button("Скачать переведенный файл (CSV)", data=csv_translated, file_name="translated_result.csv", mime="text/csv")
+                else:
+                    txt_translated = df_translated.to_csv(index=False, sep="|", header=False).encode("utf-8")
+                    st.download_button("Скачать переведенный файл (TXT)", data=txt_translated, file_name="translated_result.txt", mime="text/plain")
+
+                st.write("### Логи")
+                st.write("Перевод завершен, строк переведено:", len(df_translated))
+
+
 
