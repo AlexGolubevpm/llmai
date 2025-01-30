@@ -5,6 +5,7 @@ import pandas as pd
 import time
 import concurrent.futures
 import re
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 
 #######################################
 # 1) НАСТРОЙКИ ПРИЛОЖЕНИЯ
@@ -502,7 +503,11 @@ def postprocess_rewrites(
             )
             df.at[idx, rewrite_col] = new_rewrite
             # Оцениваем новый рерайт
-            new_score = evaluate_rewrite(api_key, model, new_rewrite)
+            new_score = evaluate_rewrite(
+                api_key=api_key,
+                model=model,
+                rewrite_text=new_rewrite
+            )
             df.at[idx, status_col] = new_score
     return df
 
@@ -536,7 +541,11 @@ def postprocess_by_words(
             )
             df.at[idx, rewrite_col] = new_rewrite
             # Оцениваем новый рерайт
-            new_score = evaluate_rewrite(api_key, model, new_rewrite)
+            new_score = evaluate_rewrite(
+                api_key=api_key,
+                model=model,
+                rewrite_text=new_rewrite
+            )
             df.at[idx, status_col] = new_score
     return df
 
@@ -905,7 +914,79 @@ with tabs[2]:
     st.header("🛠 RewritePro")
 
     ########################################
-    # Блок загрузки файла
+    # Блок выбора моделей для RewritePro
+    ########################################
+    st.subheader("🔧 Настройки моделей RewritePro")
+
+    # Две колонки для выбора моделей и настроек
+    model_col, helper_col = st.columns([1, 1])
+
+    with model_col:
+        st.markdown("#### Модель для рерайтинга")
+        if st.button("Обновить список моделей (RewritePro)", key="refresh_models_rewritepro"):
+            if not st.session_state.get("api_key"):
+                st.error("Ключ API пуст")
+                model_list_rewritepro = []
+            else:
+                model_list_rewritepro = get_model_list(st.session_state["api_key"])
+                st.session_state["model_list_rewritepro"] = model_list_rewritepro
+
+        if "model_list_rewritepro" not in st.session_state:
+            st.session_state["model_list_rewritepro"] = []
+
+        if len(st.session_state["model_list_rewritepro"]) > 0:
+            selected_model_rewritepro = st.selectbox("Выберите модель для рерайтинга", st.session_state["model_list_rewritepro"], key="select_model_rewritepro")
+        else:
+            selected_model_rewritepro = st.selectbox(
+                "Выберите модель для рерайтинга",
+                ["meta-llama/llama-3.1-8b-instruct", "Nous-Hermes-2-Mixtral-8x7B-DPO"],
+                key="select_model_default_rewritepro"
+            )
+
+        # Настройки генерации для рерайтинга
+        st.markdown("##### Параметры генерации для рерайтинга")
+        system_prompt_rewritepro = st.text_area("System Prompt для рерайтинга", value="Act like you are a helpful assistant.", key="system_prompt_rewritepro")
+
+        max_tokens_rewritepro = st.slider("max_tokens (рерайт)", min_value=0, max_value=64000, value=512, step=1, key="max_tokens_rewritepro")
+        temperature_rewritepro = st.slider("temperature (рерайт)", min_value=0.0, max_value=2.0, value=0.7, step=0.01, key="temperature_rewritepro")
+        top_p_rewritepro = st.slider("top_p (рерайт)", min_value=0.0, max_value=1.0, value=1.0, step=0.01, key="top_p_rewritepro")
+        min_p_rewritepro = st.slider("min_p (рерайт)", min_value=0.0, max_value=1.0, value=0.0, step=0.01, key="min_p_rewritepro")
+        top_k_rewritepro = st.slider("top_k (рерайт)", min_value=0, max_value=100, value=40, step=1, key="top_k_rewritepro")
+        presence_penalty_rewritepro = st.slider("presence_penalty (рерайт)", min_value=0.0, max_value=2.0, value=0.0, step=0.01, key="presence_penalty_rewritepro")
+        frequency_penalty_rewritepro = st.slider("frequency_penalty (рерайт)", min_value=0.0, max_value=2.0, value=0.0, step=0.01, key="frequency_penalty_rewritepro")
+        repetition_penalty_rewritepro = st.slider("repetition_penalty (рерайт)", min_value=0.0, max_value=2.0, value=1.0, step=0.01, key="repetition_penalty_rewritepro")
+
+    with helper_col:
+        st.markdown("#### Модель для оценки рерайтинга")
+        if st.button("Обновить список моделей для хелпера", key="refresh_models_helper"):
+            if not st.session_state.get("api_key"):
+                st.error("Ключ API пуст")
+                model_list_helper = []
+            else:
+                model_list_helper = get_model_list(st.session_state["api_key"])
+                st.session_state["model_list_helper"] = model_list_helper
+
+        if "model_list_helper" not in st.session_state:
+            st.session_state["model_list_helper"] = []
+
+        if len(st.session_state["model_list_helper"]) > 0:
+            selected_model_helper = st.selectbox("Выберите модель для оценки рерайтинга", st.session_state["model_list_helper"], key="select_model_helper")
+        else:
+            selected_model_helper = st.selectbox(
+                "Выберите модель для оценки рерайтинга",
+                ["meta-llama/llama-3.1-8b-instruct", "Nous-Hermes-2-Mixtral-8x7B-DPO"],
+                key="select_model_default_helper"
+            )
+
+        # Настройки генерации для хелпера
+        st.markdown("##### Параметры генерации для хелпера")
+        system_prompt_helper = st.text_area("System Prompt для хелпера", value="You are an expert in evaluating text rewrites.", key="system_prompt_helper")
+
+    # Разделительная линия
+    st.markdown("---")
+
+    ########################################
+    # Блок загрузки файла для RewritePro
     ########################################
     st.subheader("📂 Загрузка файла для рерайтинга")
 
@@ -960,7 +1041,6 @@ with tabs[2]:
         # Сохранение DataFrame в session_state для дальнейшего обновления
         if "df_rewrite" not in st.session_state:
             st.session_state["df_rewrite"] = df_rewrite.copy()
-
         else:
             # Обновляем DataFrame, если файл был загружен заново
             if st.session_state.get("uploaded_file_rewrite") != uploaded_file_rewrite:
@@ -971,48 +1051,68 @@ with tabs[2]:
         # Отображение таблицы с кнопками для рерайтинга
         st.write("### Таблица для рерайтинга")
 
-        # Функция для генерации кнопок
-        def generate_rewrite_button(row_idx):
-            button_key = f"rewrite_button_{row_idx}"
-            if st.button("Переписать", key=button_key):
-                rewrite_text = df_rewrite.at[row_idx, title_col_rewrite]
-                st.info(f"Переписываем строку ID: {df_rewrite.at[row_idx, id_col_rewrite]}")
+        # Настройка AgGrid
+        gb = GridOptionsBuilder.from_dataframe(df_rewrite)
+        gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=50)  # Отображать 50 строк на странице
+        gb.configure_side_bar()
+        gb.configure_default_column(editable=False, sortable=True, filter=True)
+        # Добавление кнопки "Переписать" в каждую строку
+        gb.configure_column("rewrite", editable=False)
+        gb.configure_column("status", editable=False)
+        gb.configure_column("rewrite_button", headerName="", cellRenderer='''function(params) {
+            return '<button style="padding: 5px 10px;">Переписать</button>';
+        }''', width=120)
+        gridOptions = gb.build()
+
+        # Отображение таблицы с AgGrid
+        grid_response = AgGrid(
+            df_rewrite,
+            gridOptions=gridOptions,
+            height=500,
+            width='100%',
+            update_mode=GridUpdateMode.SELECTION_CHANGED,
+            data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+            fit_columns_on_grid_load=False,
+            allow_unsafe_jscode=True,  # Разрешить выполнение пользовательского JS
+            enable_enterprise_modules=False,
+            theme='light'
+        )
+
+        # Обработка кликов на кнопки "Переписать"
+        for event in grid_response['selected_rows']:
+            if 'rewrite_button' in event:
+                row_id = event[id_col_rewrite]
+                st.info(f"Переписываем строку ID: {row_id}")
+                # Поиск строки по ID
+                row_index = df_rewrite.index[df_rewrite[id_col_rewrite] == row_id].tolist()[0]
+                original_text = df_rewrite.at[row_index, title_col_rewrite]
+                # Рерайтим текст
                 new_rewrite = rewrite_specific_row(
                     api_key=st.session_state["api_key"],
-                    model=selected_model_text,  # Используем модель из обработки текста или можно выбрать отдельно
-                    system_prompt="Act like you are a helpful assistant.",
+                    model=selected_model_rewritepro,
+                    system_prompt=system_prompt_rewritepro,
                     user_prompt="Rewrite the following title:",
-                    row_text=rewrite_text,
-                    max_tokens=512,
-                    temperature=0.7,
-                    top_p=1.0,
-                    min_p=0.0,
-                    top_k=40,
-                    presence_penalty=0.0,
-                    frequency_penalty=0.0,
-                    repetition_penalty=1.0
+                    row_text=original_text,
+                    max_tokens=max_tokens_rewritepro,
+                    temperature=temperature_rewritepro,
+                    top_p=top_p_rewritepro,
+                    min_p=min_p_rewritepro,
+                    top_k=top_k_rewritepro,
+                    presence_penalty=presence_penalty_rewritepro,
+                    frequency_penalty=frequency_penalty_rewritepro,
+                    repetition_penalty=repetition_penalty_rewritepro
                 )
-                df_rewrite.at[row_idx, "rewrite"] = new_rewrite
-                # Оценка рерайта
+                df_rewrite.at[row_index, "rewrite"] = new_rewrite
+                # Оцениваем рерайт
                 score = evaluate_rewrite(
                     api_key=st.session_state["api_key"],
-                    model=selected_model_text,
+                    model=selected_model_helper,
                     rewrite_text=new_rewrite
                 )
-                df_rewrite.at[row_idx, "status"] = score
+                df_rewrite.at[row_index, "status"] = score
                 st.success(f"Рерайт завершён. Оценка: {score}/10")
                 # Обновляем session_state
                 st.session_state["df_rewrite"] = df_rewrite.copy()
-
-        # Отображаем DataFrame с кнопками
-        for idx, row in df_rewrite.iterrows():
-            cols = st.columns(len(df_rewrite.columns) + 2)  # Дополнительные колонки для кнопки и статуса
-            for i, col in enumerate(df_rewrite.columns):
-                cols[i].write(row[col])
-            # Кнопка переписать
-            generate_rewrite_button(idx)
-            # Статус
-            cols[-1].write(f"{row['status']}/10")
 
         # Разделительная линия
         st.markdown("---")
@@ -1020,7 +1120,7 @@ with tabs[2]:
         ########################################
         # Блок автоматической оценки и рерайтинга
         ########################################
-        st.subheader("🔍 Автоматическая оценка и рерайтинг")
+        st.subheader("🔍 Автоматическая оценка и рерайтинг низко оцененных строк")
 
         if st.button("Оценить и переписать низко оцененные строки (ниже 7)", key="auto_rewrite"):
             if not st.session_state.get("api_key"):
@@ -1029,7 +1129,7 @@ with tabs[2]:
                 st.info("Начинаем оценку и рерайтинг низко оцененных строк...")
                 df_rewrite = postprocess_rewrites(
                     api_key=st.session_state["api_key"],
-                    model=selected_model_text,
+                    model=selected_model_rewritepro,
                     df=df_rewrite,
                     rewrite_col="rewrite",
                     status_col="status",
@@ -1044,7 +1144,7 @@ with tabs[2]:
         ########################################
         # Блок постобработчика по словам
         ########################################
-        st.subheader("🔠 Постобработчик по словам")
+        st.subheader("🔠 Постобработчик по ключевым словам")
 
         words_input = st.text_input("Введите слова для переписывания (через запятую)", value="", key="words_input_rewrite")
         if st.button("Переписать строки, содержащие указанные слова", key="rewrite_by_words"):
@@ -1060,7 +1160,7 @@ with tabs[2]:
                     st.info("Начинаем переписывание строк, содержащих указанные слова...")
                     df_rewrite = postprocess_by_words(
                         api_key=st.session_state["api_key"],
-                        model=selected_model_text,
+                        model=selected_model_rewritepro,
                         df=df_rewrite,
                         rewrite_col="rewrite",
                         status_col="status",
@@ -1099,6 +1199,3 @@ if "api_key" not in st.session_state:
 with st.sidebar:
     st.header("🔑 Настройки API")
     st.session_state["api_key"] = st.text_input("API Key", value=st.session_state["api_key"], type="password")
-
-
-
