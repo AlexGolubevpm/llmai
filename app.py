@@ -175,7 +175,6 @@ def process_file(
     start_time = time.time()
     lines_processed = 0
 
-    # === Исправленный блок с нормальными отступами: ===
     for start_idx in range(0, total_rows, chunk_size):
         chunk_start_time = time.time()
         end_idx = min(start_idx + chunk_size, total_rows)
@@ -404,18 +403,151 @@ def process_translation_file(
 
     return df_out
 
+# ======= Новые функции для RewritePro =======
+
+def evaluate_rewrite(api_key: str, model: str, rewrite_text: str):
+    """
+    Функция для оценки качества рерайта.
+    Возвращает оценку от 0 до 10.
+    """
+    system_prompt = "You are an expert in evaluating text rewrites."
+    user_prompt = f"Оцени качество следующего рерайта по шкале от 0 до 10, где 10 - отличный рерайт, а 0 - очень плохой:\n\n{rewrite_text}"
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ]
+
+    raw_response = chat_completion_request(
+        api_key=api_key,
+        messages=messages,
+        model=model,
+        max_tokens=10,  # Небольшой ответ
+        temperature=0.0,  # Для более детерминированного ответа
+        top_p=1.0,
+        min_p=0.0,
+        top_k=40,
+        presence_penalty=0.0,
+        frequency_penalty=0.0,
+        repetition_penalty=1.0
+    )
+
+    # Предполагаем, что ответ - число от 0 до 10
+    try:
+        score = float(re.findall(r'\d+', raw_response)[0])
+        return min(max(score, 0.0), 10.0)  # Ограничиваем от 0 до 10
+    except:
+        return 0.0  # Если не удалось распознать, ставим 0
+
+def rewrite_specific_row(
+    api_key: str,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    row_text: str,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    min_p: float,
+    top_k: int,
+    presence_penalty: float,
+    frequency_penalty: float,
+    repetition_penalty: float
+):
+    """Функция для рерайтинга конкретной строки."""
+    return process_single_row(
+        api_key,
+        model,
+        system_prompt,
+        user_prompt,
+        row_text,
+        max_tokens,
+        temperature,
+        top_p,
+        min_p,
+        top_k,
+        presence_penalty,
+        frequency_penalty,
+        repetition_penalty
+    )
+
+def postprocess_rewrites(
+    api_key: str,
+    model: str,
+    df: pd.DataFrame,
+    rewrite_col: str,
+    status_col: str,
+    threshold: float = 7.0
+):
+    """Функция для оценки и переписывания строк с низкой оценкой."""
+    for idx, row in df.iterrows():
+        current_score = row[status_col]
+        if current_score < threshold:
+            original_text = row[rewrite_col]
+            # Рерайтим текст
+            new_rewrite = rewrite_specific_row(
+                api_key=api_key,
+                model=model,
+                system_prompt="Act like you are a helpful assistant.",
+                user_prompt="Rewrite the following title:",
+                row_text=original_text,
+                max_tokens=512,
+                temperature=0.7,
+                top_p=1.0,
+                min_p=0.0,
+                top_k=40,
+                presence_penalty=0.0,
+                frequency_penalty=0.0,
+                repetition_penalty=1.0
+            )
+            df.at[idx, rewrite_col] = new_rewrite
+            # Оцениваем новый рерайт
+            new_score = evaluate_rewrite(api_key, model, new_rewrite)
+            df.at[idx, status_col] = new_score
+    return df
+
+def postprocess_by_words(
+    api_key: str,
+    model: str,
+    df: pd.DataFrame,
+    rewrite_col: str,
+    status_col: str,
+    words: list
+):
+    """Функция для переписывания строк, содержащих определённые слова."""
+    for idx, row in df.iterrows():
+        text = row[rewrite_col]
+        if any(word.lower() in text.lower() for word in words):
+            # Рерайтим текст
+            new_rewrite = rewrite_specific_row(
+                api_key=api_key,
+                model=model,
+                system_prompt="Act like you are a helpful assistant.",
+                user_prompt="Rewrite the following title:",
+                row_text=text,
+                max_tokens=512,
+                temperature=0.7,
+                top_p=1.0,
+                min_p=0.0,
+                top_k=40,
+                presence_penalty=0.0,
+                frequency_penalty=0.0,
+                repetition_penalty=1.0
+            )
+            df.at[idx, rewrite_col] = new_rewrite
+            # Оцениваем новый рерайт
+            new_score = evaluate_rewrite(api_key, model, new_rewrite)
+            df.at[idx, status_col] = new_score
+    return df
+
 #######################################
 # 3) ИНТЕРФЕЙС
 #######################################
 
 st.title("🧠 Novita AI Batch Processor")
 
-# Поле ввода API Key, доступное во всех вкладках
-st.sidebar.header("Настройки API")
-api_key = st.sidebar.text_input("API Key", value=DEFAULT_API_KEY, type="password")
-
 # Создаем вкладки для разделения функционала
-tabs = st.tabs(["Обработка текста", "Перевод текста"])
+tabs = st.tabs(["Обработка текста", "Перевод текста", "RewritePro"])
 
 ########################################
 # Вкладка 1: Обработка текста
@@ -434,11 +566,11 @@ with tabs[0]:
         st.caption("Список моделей загружается из API Novita AI")
 
         if st.button("Обновить список моделей (Обработка текста)", key="refresh_models_text"):
-            if not api_key:
+            if not st.session_state.get("api_key"):
                 st.error("Ключ API пуст")
                 model_list_text = []
             else:
-                model_list_text = get_model_list(api_key)
+                model_list_text = get_model_list(st.session_state["api_key"])
                 st.session_state["model_list_text"] = model_list_text
 
         if "model_list_text" not in st.session_state:
@@ -480,7 +612,7 @@ with tabs[0]:
     user_prompt_single_text = st.text_area("Введите ваш промпт для одиночной генерации", key="user_prompt_single_text")
 
     if st.button("Отправить одиночный промпт (Обработка текста)", key="submit_single_text"):
-        if not api_key:
+        if not st.session_state.get("api_key"):
             st.error("API Key не указан!")
         elif not user_prompt_single_text.strip():
             st.error("Промпт не может быть пустым!")
@@ -491,7 +623,7 @@ with tabs[0]:
             ]
             st.info("Отправляем запрос...")
             raw_response = chat_completion_request(
-                api_key=api_key,
+                api_key=st.session_state["api_key"],
                 messages=from_text,
                 model=selected_model_text,
                 max_tokens=max_tokens_text,
@@ -560,7 +692,7 @@ with tabs[0]:
         max_workers_text = st.slider("Потоки (max_workers)", min_value=1, max_value=20, value=5, key="max_workers_text")
 
         if st.button("Запустить обработку файла (Обработка текста)", key="process_file_text"):
-            if not api_key:
+            if not st.session_state.get("api_key"):
                 st.error("API Key не указан!")
             else:
                 row_count = len(df_text)
@@ -569,7 +701,7 @@ with tabs[0]:
                 st.info("Начинаем обработку, пожалуйста подождите...")
 
                 df_out_text = process_file(
-                    api_key=api_key,
+                    api_key=st.session_state["api_key"],
                     model=selected_model_text,
                     system_prompt=system_prompt_text,
                     user_prompt=user_prompt_text,
@@ -618,11 +750,11 @@ with tabs[1]:
         st.caption("Список моделей загружается из API Novita AI")
 
         if st.button("Обновить список моделей (Перевод текста)", key="refresh_models_translate"):
-            if not api_key:
+            if not st.session_state.get("api_key"):
                 st.error("Ключ API пуст")
                 model_list_translate = []
             else:
-                model_list_translate = get_model_list(api_key)
+                model_list_translate = get_model_list(st.session_state["api_key"])
                 st.session_state["model_list_translate"] = model_list_translate
 
         if "model_list_translate" not in st.session_state:
@@ -720,12 +852,10 @@ with tabs[1]:
         max_workers_translate = st.slider("Потоки (max_workers) для перевода", min_value=1, max_value=20, value=5, key="max_workers_translate")
 
         if st.button("Начать перевод", key="start_translation"):
-            if not api_key:
+            if not st.session_state.get("api_key"):
                 st.error("API Key не указан!")
             elif source_language == target_language:
                 st.error("Исходный и целевой языки должны отличаться!")
-            elif not title_col_translate:
-                st.error("Не выбрана колонка для перевода!")
             else:
                 row_count_translate = len(df_translate)
                 if row_count_translate > 100000:
@@ -737,7 +867,7 @@ with tabs[1]:
 
                 # Обработка перевода
                 df_translated = process_translation_file(
-                    api_key=api_key,
+                    api_key=st.session_state["api_key"],
                     model=selected_model_translate,
                     system_prompt=system_prompt_translate,
                     user_prompt=user_prompt_translate,
@@ -768,7 +898,207 @@ with tabs[1]:
                 st.write("### Логи")
                 st.write("Перевод завершен, строк переведено:", len(df_translated))
 
+########################################
+# Вкладка 3: RewritePro
+########################################
+with tabs[2]:
+    st.header("🛠 RewritePro")
 
+    ########################################
+    # Блок загрузки файла
+    ########################################
+    st.subheader("📂 Загрузка файла для рерайтинга")
+
+    st.markdown("##### Настройка парсинга TXT/CSV для рерайтинга")
+    delimiter_input_rewrite = st.text_input("Разделитель (delimiter) для рерайтинга", value="|", key="delimiter_input_rewrite")
+    column_input_rewrite = st.text_input("Названия колонок (через запятую) для рерайтинга", value="id,title", key="column_input_rewrite")
+
+    uploaded_file_rewrite = st.file_uploader("Прикрепить файл для рерайтинга (CSV или TXT, до 100000 строк)", type=["csv", "txt"], key="uploaded_file_rewrite")
+
+    df_rewrite = None
+    if uploaded_file_rewrite is not None:
+        file_extension_rewrite = uploaded_file_rewrite.name.split(".")[-1].lower()
+        try:
+            if file_extension_rewrite == "csv":
+                df_rewrite = pd.read_csv(uploaded_file_rewrite)
+            else:
+                content_rewrite = uploaded_file_rewrite.read().decode("utf-8")
+                lines_rewrite = content_rewrite.splitlines()
+
+                columns_rewrite = [c.strip() for c in column_input_rewrite.split(",")]
+
+                parsed_lines_rewrite = []
+                for line in lines_rewrite:
+                    splitted_rewrite = line.split(delimiter_input_rewrite, maxsplit=len(columns_rewrite) - 1)
+                    if len(splitted_rewrite) < len(columns_rewrite):
+                        # Заполняем недостающие колонки пустыми строками
+                        splitted_rewrite += [""] * (len(columns_rewrite) - len(splitted_rewrite))
+                    parsed_lines_rewrite.append(splitted_rewrite)
+
+                df_rewrite = pd.DataFrame(parsed_lines_rewrite, columns=columns_rewrite)
+
+            st.write("### Предпросмотр файла для рерайтинга")
+            st.dataframe(df_rewrite.head())
+        except Exception as e:
+            st.error(f"Ошибка при чтении файла для рерайтинга: {e}")
+            df_rewrite = None
+
+    ########################################
+    # Блок выбора колонок и настроек
+    ########################################
+    if df_rewrite is not None:
+        cols_rewrite = df_rewrite.columns.tolist()
+        id_col_rewrite = st.selectbox("Какая колонка является ID?", cols_rewrite, key="id_col_rewrite")
+        title_col_rewrite = st.selectbox("Какая колонка является заголовком для рерайтинга?", cols_rewrite, key="title_col_rewrite")
+
+        # Инициализация дополнительных колонок, если их нет
+        if "rewrite" not in df_rewrite.columns:
+            df_rewrite["rewrite"] = ""
+        if "status" not in df_rewrite.columns:
+            df_rewrite["status"] = 0.0
+
+        # Сохранение DataFrame в session_state для дальнейшего обновления
+        if "df_rewrite" not in st.session_state:
+            st.session_state["df_rewrite"] = df_rewrite.copy()
+
+        else:
+            # Обновляем DataFrame, если файл был загружен заново
+            if st.session_state.get("uploaded_file_rewrite") != uploaded_file_rewrite:
+                st.session_state["df_rewrite"] = df_rewrite.copy()
+
+        df_rewrite = st.session_state["df_rewrite"]
+
+        # Отображение таблицы с кнопками для рерайтинга
+        st.write("### Таблица для рерайтинга")
+
+        # Функция для генерации кнопок
+        def generate_rewrite_button(row_idx):
+            button_key = f"rewrite_button_{row_idx}"
+            if st.button("Переписать", key=button_key):
+                rewrite_text = df_rewrite.at[row_idx, title_col_rewrite]
+                st.info(f"Переписываем строку ID: {df_rewrite.at[row_idx, id_col_rewrite]}")
+                new_rewrite = rewrite_specific_row(
+                    api_key=st.session_state["api_key"],
+                    model=selected_model_text,  # Используем модель из обработки текста или можно выбрать отдельно
+                    system_prompt="Act like you are a helpful assistant.",
+                    user_prompt="Rewrite the following title:",
+                    row_text=rewrite_text,
+                    max_tokens=512,
+                    temperature=0.7,
+                    top_p=1.0,
+                    min_p=0.0,
+                    top_k=40,
+                    presence_penalty=0.0,
+                    frequency_penalty=0.0,
+                    repetition_penalty=1.0
+                )
+                df_rewrite.at[row_idx, "rewrite"] = new_rewrite
+                # Оценка рерайта
+                score = evaluate_rewrite(
+                    api_key=st.session_state["api_key"],
+                    model=selected_model_text,
+                    rewrite_text=new_rewrite
+                )
+                df_rewrite.at[row_idx, "status"] = score
+                st.success(f"Рерайт завершён. Оценка: {score}/10")
+                # Обновляем session_state
+                st.session_state["df_rewrite"] = df_rewrite.copy()
+
+        # Отображаем DataFrame с кнопками
+        for idx, row in df_rewrite.iterrows():
+            cols = st.columns(len(df_rewrite.columns) + 2)  # Дополнительные колонки для кнопки и статуса
+            for i, col in enumerate(df_rewrite.columns):
+                cols[i].write(row[col])
+            # Кнопка переписать
+            generate_rewrite_button(idx)
+            # Статус
+            cols[-1].write(f"{row['status']}/10")
+
+        # Разделительная линия
+        st.markdown("---")
+
+        ########################################
+        # Блок автоматической оценки и рерайтинга
+        ########################################
+        st.subheader("🔍 Автоматическая оценка и рерайтинг")
+
+        if st.button("Оценить и переписать низко оцененные строки (ниже 7)", key="auto_rewrite"):
+            if not st.session_state.get("api_key"):
+                st.error("API Key не указан!")
+            else:
+                st.info("Начинаем оценку и рерайтинг низко оцененных строк...")
+                df_rewrite = postprocess_rewrites(
+                    api_key=st.session_state["api_key"],
+                    model=selected_model_text,
+                    df=df_rewrite,
+                    rewrite_col="rewrite",
+                    status_col="status",
+                    threshold=7.0
+                )
+                st.success("Автоматическая оценка и рерайтинг завершены.")
+                st.session_state["df_rewrite"] = df_rewrite.copy()
+
+        # Разделительная линия
+        st.markdown("---")
+
+        ########################################
+        # Блок постобработчика по словам
+        ########################################
+        st.subheader("🔠 Постобработчик по словам")
+
+        words_input = st.text_input("Введите слова для переписывания (через запятую)", value="", key="words_input_rewrite")
+        if st.button("Переписать строки, содержащие указанные слова", key="rewrite_by_words"):
+            if not st.session_state.get("api_key"):
+                st.error("API Key не указан!")
+            elif not words_input.strip():
+                st.error("Пожалуйста, введите хотя бы одно слово.")
+            else:
+                words = [word.strip() for word in words_input.split(",") if word.strip()]
+                if not words:
+                    st.error("Пожалуйста, введите хотя бы одно валидное слово.")
+                else:
+                    st.info("Начинаем переписывание строк, содержащих указанные слова...")
+                    df_rewrite = postprocess_by_words(
+                        api_key=st.session_state["api_key"],
+                        model=selected_model_text,
+                        df=df_rewrite,
+                        rewrite_col="rewrite",
+                        status_col="status",
+                        words=words
+                    )
+                    st.success("Переписывание завершено.")
+                    st.session_state["df_rewrite"] = df_rewrite.copy()
+
+        # Разделительная линия
+        st.markdown("---")
+
+        ########################################
+        # Скачивание результата
+        ########################################
+        st.subheader("💾 Скачивание результата")
+
+        download_format_rewrite = st.selectbox("Формат скачивания файла", ["csv", "txt"], key="download_format_rewrite")
+
+        if download_format_rewrite == "csv":
+            csv_rewrite = df_rewrite.to_csv(index=False).encode("utf-8")
+            st.download_button("Скачать файл (CSV)", data=csv_rewrite, file_name="rewrite_result.csv", mime="text/csv")
+        else:
+            txt_rewrite = df_rewrite.to_csv(index=False, sep="|", header=True).encode("utf-8")
+            st.download_button("Скачать файл (TXT)", data=txt_rewrite, file_name="rewrite_result.txt", mime="text/plain")
+
+        st.write("### Логи")
+        st.write("Рерайтинг завершен, строк обработано:", len(df_rewrite))
+
+########################################
+# Боковая панель: Ввод API Key
+########################################
+# Перемещаем ввод API Key в боковую панель для удобства
+if "api_key" not in st.session_state:
+    st.session_state["api_key"] = DEFAULT_API_KEY
+
+with st.sidebar:
+    st.header("🔑 Настройки API")
+    st.session_state["api_key"] = st.text_input("API Key", value=st.session_state["api_key"], type="password")
 
 
 
