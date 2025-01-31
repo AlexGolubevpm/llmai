@@ -22,29 +22,122 @@ executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
 # Функция для отправки задач в фоновый режим
 def submit_task(function, *args, **kwargs):
     task_id = str(uuid.uuid4())
-    server_state.tasks[task_id] = {
+    tasks = server_state.get('tasks')
+    tasks[task_id] = {
         'status': 'running',
         'progress': 0.0,
         'result': None,
         'start_time': time.time(),
         'end_time': None
     }
+    server_state.set('tasks', tasks)
     
     def task_wrapper(task_id, *args, **kwargs):
         try:
             result = function(*args, task_id=task_id, **kwargs)
-            server_state.tasks[task_id]['status'] = 'completed'
-            server_state.tasks[task_id]['result'] = result
-            server_state.tasks[task_id]['end_time'] = time.time()
+            tasks = server_state.get('tasks')
+            tasks[task_id]['status'] = 'completed'
+            tasks[task_id]['result'] = result
+            tasks[task_id]['end_time'] = time.time()
+            server_state.set('tasks', tasks)
         except Exception as e:
-            server_state.tasks[task_id]['status'] = 'failed'
-            server_state.tasks[task_id]['result'] = str(e)
-            server_state.tasks[task_id]['end_time'] = time.time()
+            tasks = server_state.get('tasks')
+            tasks[task_id]['status'] = 'failed'
+            tasks[task_id]['result'] = str(e)
+            tasks[task_id]['end_time'] = time.time()
+            server_state.set('tasks', tasks)
     
     executor.submit(task_wrapper, task_id, *args, **kwargs)
     st.session_state.current_task_id = task_id
     
     return task_id
+
+# Пример функции обработки (замените на вашу реальную функцию)
+def example_long_task(task_id, duration=10):
+    for i in range(duration):
+        time.sleep(1)  # Симуляция длительной задачи
+        tasks = server_state.get('tasks')
+        if task_id in tasks:
+            tasks[task_id]['progress'] = (i + 1) / duration
+            server_state.set('tasks', tasks)
+    return "Задача завершена успешно!"
+
+# Основной интерфейс Streamlit
+st.title("Пример использования streamlit-server-state и streamlit-autorefresh")
+
+# Кнопка для запуска задачи
+if st.button("Запустить долгую задачу"):
+    task_id = submit_task(example_long_task, duration=10)
+    st.success(f"✅ Задача запущена! Ваш Task ID: {task_id}")
+    st.info("Сохраните этот ID, чтобы отслеживать прогресс.")
+
+# Интерфейс для отслеживания задач
+st.sidebar.header("📈 Отслеживание задач")
+
+with st.sidebar.expander("🔍 Проверить статус задачи"):
+    input_task_id = st.text_input("Введите Task ID", key="input_task_id")
+    if st.button("Проверить статус", key="check_status"):
+        if not input_task_id:
+            st.error("❌ Task ID не может быть пустым!")
+        else:
+            tasks = server_state.get('tasks')
+            task = tasks.get(input_task_id)
+            if task:
+                status = task['status']
+                progress = task['progress']
+                result = task['result']
+                start_time = task['start_time']
+                end_time = task['end_time']
+
+                st.write(f"**Task ID:** {input_task_id}")
+                st.write(f"**Статус:** {status}")
+                st.progress(progress)
+                st.write(f"**Начало:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}")
+                if end_time:
+                    st.write(f"**Завершение:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_time))}")
+                else:
+                    st.write("**Завершение:** В процессе")
+
+                if status == 'completed':
+                    st.write(f"**Результат:** {result}")
+                elif status == 'failed':
+                    st.error(f"**Ошибка:** {result}")
+            else:
+                st.error("❌ Задача с таким ID не найдена.")
+
+# Автоматическое обновление статуса текущей задачи
+if 'current_task_id' not in st.session_state:
+    st.session_state.current_task_id = None
+
+if st.session_state.current_task_id:
+    tasks = server_state.get('tasks')
+    task = tasks.get(st.session_state.current_task_id)
+    if task:
+        status = task['status']
+        progress = task['progress']
+        result = task['result']
+        start_time = task['start_time']
+        end_time = task['end_time']
+
+        st.write(f"**Текущая задача:** {st.session_state.current_task_id}")
+        st.write(f"**Статус:** {status}")
+        st.progress(progress)
+        st.write(f"**Начало:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}")
+        if end_time:
+            st.write(f"**Завершение:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_time))}")
+        else:
+            st.write("**Завершение:** В процессе")
+
+        if status == 'completed':
+            st.write(f"**Результат:** {result}")
+            st.session_state.current_task_id = None  # Сброс после завершения
+            st.success("✅ Задача завершена!")
+        elif status == 'failed':
+            st.error(f"**Ошибка:** {result}")
+            st.session_state.current_task_id = None  # Сброс после ошибки
+        else:
+            # Автообновление каждые 5 секунд
+            st_autorefresh(interval=5000, key="progress_refresh_current_task")
 
 # Функция обработки файла
 def process_file(
