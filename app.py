@@ -1,12 +1,10 @@
 import streamlit as st
-from streamlit_server_state import server_state, server_state_lock
-from streamlit_autorefresh import st_autorefresh
-import concurrent.futures
-import uuid
-import time
-import pandas as pd
+import streamlit.components.v1 as components
 import requests
 import json
+import pandas as pd
+import time
+import concurrent.futures
 import re
 
 #######################################
@@ -57,9 +55,11 @@ def get_model_list(api_key: str):
             models = [m["id"] for m in data.get("data", [])]
             return models
         else:
-            return f"Не удалось получить список моделей. Код: {resp.status_code}. Текст: {resp.text}"
+            st.error(f"Не удалось получить список моделей. Код: {resp.status_code}. Текст: {resp.text}")
+            return []
     except Exception as e:
-        return f"Ошибка при получении списка моделей: {e}"
+        st.error(f"Ошибка при получении списка моделей: {e}")
+        return []
 
 def chat_completion_request(
     api_key: str,
@@ -152,7 +152,6 @@ def process_single_row(
     return final_response
 
 def process_file(
-    task_id: str,
     api_key: str,
     model: str,
     system_prompt: str,
@@ -173,10 +172,8 @@ def process_file(
 ):
     """Параллельно обрабатываем загруженный файл построчно (или чанками)."""
 
-    tasks = server_state['tasks']
-    tasks[task_id]['status'] = 'running'
-    tasks[task_id]['start_time'] = time.time()
-    server_state['tasks'] = tasks
+    progress_bar = st.progress(0)
+    time_placeholder = st.empty()  # для отображения оставшегося времени
 
     results = []
     total_rows = len(df)
@@ -223,9 +220,7 @@ def process_file(
         results.extend(chunk_results)
 
         lines_processed += chunk_size_actual
-        progress = lines_processed / total_rows
-        tasks[task_id]['progress'] = progress
-        server_state['tasks'] = tasks
+        progress_bar.progress(lines_processed / total_rows)
 
         time_for_chunk = time.time() - chunk_start_time
         if chunk_size_actual > 0:
@@ -238,17 +233,14 @@ def process_file(
                 else:
                     est_time_left_min = est_time_left_sec / 60.0
                     time_text = f"~{est_time_left_min:.1f} мин."
-                tasks[task_id]['estimated_time_left'] = time_text
-                server_state['tasks'] = tasks
+                time_placeholder.info(f"Примерное оставшееся время: {time_text}")
 
     # Создаем копию df с новым столбцом
     df_out = df.copy()
     df_out["rewrite"] = results
 
     elapsed = time.time() - start_time
-    tasks[task_id]['status'] = 'completed'
-    tasks[task_id]['end_time'] = time.time()
-    server_state['tasks'] = tasks
+    time_placeholder.success(f"Обработка завершена за {elapsed:.1f} секунд.")
 
     return df_out
 
@@ -322,7 +314,6 @@ def process_translation_single_row(
     return translated_text
 
 def process_translation_file(
-    task_id: str,
     api_key: str,
     model: str,
     system_prompt: str,
@@ -342,10 +333,8 @@ def process_translation_file(
 ):
     """Параллельно переводим загруженный файл построчно (или чанками)."""
 
-    tasks = server_state['tasks']
-    tasks[task_id]['status'] = 'running'
-    tasks[task_id]['start_time'] = time.time()
-    server_state['tasks'] = tasks
+    progress_bar = st.progress(0)
+    time_placeholder = st.empty()  # для отображения оставшегося времени
 
     results = []
     total_rows = len(df)
@@ -392,9 +381,7 @@ def process_translation_file(
         results.extend(chunk_results)
 
         lines_processed += chunk_size_actual
-        progress = lines_processed / total_rows
-        tasks[task_id]['progress'] = progress
-        server_state['tasks'] = tasks
+        progress_bar.progress(lines_processed / total_rows)
 
         time_for_chunk = time.time() - chunk_start_time
         if chunk_size_actual > 0:
@@ -407,17 +394,14 @@ def process_translation_file(
                 else:
                     est_time_left_min = est_time_left_sec / 60.0
                     time_text = f"~{est_time_left_min:.1f} мин."
-                tasks[task_id]['estimated_time_left'] = time_text
-                server_state['tasks'] = tasks
+                time_placeholder.info(f"Примерное оставшееся время: {time_text}")
 
     # Создаем копию df с новым столбцом
     df_out = df.copy()
     df_out["translated_title"] = results
 
     elapsed = time.time() - start_time
-    tasks[task_id]['status'] = 'completed'
-    tasks[task_id]['end_time'] = time.time()
-    server_state['tasks'] = tasks
+    time_placeholder.success(f"Перевод завершен за {elapsed:.1f} секунд.")
 
     return df_out
 
@@ -477,13 +461,6 @@ PRESETS = {
 # 4) ИНТЕРФЕЙС
 #######################################
 
-# Инициализация хранилища задач
-if 'tasks' not in server_state:
-    server_state['tasks'] = {}
-
-# Создаем пул потоков для выполнения задач
-executor_main = concurrent.futures.ThreadPoolExecutor(max_workers=5)
-
 st.title("🧠 Novita AI Batch Processor")
 
 # Поле ввода API Key, доступное во всех вкладках
@@ -491,7 +468,7 @@ st.sidebar.header("🔑 Настройки API")
 api_key = st.sidebar.text_input("API Key", value=DEFAULT_API_KEY, type="password")
 
 # Создаем вкладки для разделения функционала
-tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста", "📊 Отслеживание задач"])
+tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста"])
 
 ########################################
 # Вкладка 1: Обработка текста
@@ -545,41 +522,16 @@ with tabs[0]:
         if st.button("🔄 Обновить список моделей (Обработка текста)", key="refresh_models_text"):
             if not api_key:
                 st.error("❌ Ключ API пуст")
+                st.session_state["model_list_text"] = []
             else:
-                # Создаём задачу для загрузки моделей
-                task_id = uuid.uuid4().hex
-                server_state['tasks'][task_id] = {
-                    'status': 'loading_models_text',
-                    'progress': 0.0,
-                    'result': None,
-                    'start_time': time.time(),
-                    'end_time': None,
-                    'type': 'loading_models_text'
-                }
-                server_state['tasks'] = server_state['tasks']
+                model_list_text = get_model_list(api_key)
+                st.session_state["model_list_text"] = model_list_text
 
-                # Отправляем задачу в пул потоков
-                executor_main.submit(
-                    load_models_task,
-                    task_id,
-                    api_key
-                )
+        if "model_list_text" not in st.session_state:
+            st.session_state["model_list_text"] = []
 
-                st.success(f"✅ Задача загрузки моделей запущена! Ваш Task ID: {task_id}")
-                st.info("Сохраните этот ID, чтобы отслеживать прогресс.")
-
-        # Автоматическое обновление списка моделей через autorefresh
-        st_autorefresh(interval=2000, limit=100, key="autorefresh_models_text")
-
-        # Получаем список моделей из server_state
-        model_list_text = []
-        for task_id, task in server_state['tasks'].items():
-            if task.get('status') == 'completed' and task.get('type') == 'loading_models_text':
-                model_list_text = task.get('result', [])
-                break
-
-        if len(model_list_text) > 0:
-            selected_model_text = st.selectbox("✅ Выберите модель для обработки текста", model_list_text, key="select_model_text")
+        if len(st.session_state["model_list_text"]) > 0:
+            selected_model_text = st.selectbox("✅ Выберите модель для обработки текста", st.session_state["model_list_text"], key="select_model_text")
         else:
             selected_model_text = st.selectbox(
                 "✅ Выберите модель для обработки текста",
@@ -684,7 +636,7 @@ with tabs[0]:
                 df_text = pd.DataFrame(parsed_lines, columns=columns)
 
             st.write("### 📋 Предпросмотр файла")
-            num_preview = st.number_input("🔍 Количество строк для предпросмотра", min_value=1, max_value=100, value=10, key="num_preview_text")
+            num_preview = st.number_input("🔍 Количество строк для предпросмотра", min_value=1, max_value=100, value=10)
             st.dataframe(df_text.head(num_preview))
         except Exception as e:
             st.error(f"❌ Ошибка при чтении файла: {e}")
@@ -707,48 +659,39 @@ with tabs[0]:
                     st.warning(f"⚠️ Файл содержит {row_count} строк. Это превышает рекомендованный лимит в 100000.")
                 st.info("🔄 Начинаем обработку, пожалуйста подождите...")
 
-                # Создаем уникальный ID для задачи
-                task_id = uuid.uuid4().hex
-
-                # Инициализируем задачу в server_state
-                server_state['tasks'][task_id] = {
-                    'status': 'queued',
-                    'progress': 0.0,
-                    'result': None,
-                    'start_time': None,
-                    'end_time': None,
-                    'type': 'processing_text'
-                }
-                server_state['tasks'] = server_state['tasks']
-
-                # Отправляем задачу в пул потоков
-                executor_main.submit(
-                    process_file,
-                    task_id,
-                    api_key,
-                    selected_model_text,
-                    system_prompt_text,
-                    user_prompt_text,
-                    df_text,
-                    title_col_text,
-                    "csv",  # response_format, можно использовать при необходимости
-                    max_tokens_text,
-                    temperature_text,
-                    top_p_text,
-                    min_p_text,
-                    top_k_text,
-                    presence_penalty_text,
-                    frequency_penalty_text,
-                    repetition_penalty_text,
-                    chunk_size=10,
+                df_out_text = process_file(
+                    api_key=api_key,
+                    model=selected_model_text,
+                    system_prompt=system_prompt_text,
+                    user_prompt=user_prompt_text,
+                    df=df_text,
+                    title_col=title_col_text,
+                    response_format="csv",  # уже не используем, но пусть есть
+                    max_tokens=max_tokens_text,
+                    temperature=temperature_text,
+                    top_p=top_p_text,
+                    min_p=min_p_text,
+                    top_k=top_k_text,
+                    presence_penalty=presence_penalty_text,
+                    frequency_penalty=frequency_penalty_text,
+                    repetition_penalty=repetition_penalty_text,
+                    chunk_size=10,  # фиксируем 10 строк в чанке
                     max_workers=max_workers_text
                 )
 
-                st.success(f"✅ Задача запущена! Ваш Task ID: {task_id}")
-                st.info("Сохраните этот ID, чтобы отслеживать прогресс.")
+                st.success("✅ Обработка завершена!")
 
-    # Разделительная линия
-    st.markdown("---")
+                # Скачивание
+                output_format = st.selectbox("📥 Формат вывода", ["csv", "txt"], key="output_format_text")
+                if output_format == "csv":
+                    csv_out_text = df_out_text.to_csv(index=False).encode("utf-8")
+                    st.download_button("📥 Скачать результат (CSV)", data=csv_out_text, file_name="result.csv", mime="text/csv")
+                else:
+                    txt_out_text = df_out_text.to_csv(index=False, sep="|", header=False).encode("utf-8")
+                    st.download_button("📥 Скачать результат (TXT)", data=txt_out_text, file_name="result.txt", mime="text/plain")
+
+                st.write("### 📊 Логи")
+                st.write(f"✅ Обработка завершена, строк обработано: {len(df_out_text)}")
 
 ########################################
 # Вкладка 2: Перевод текста
@@ -802,41 +745,16 @@ with tabs[1]:
         if st.button("🔄 Обновить список моделей (Перевод текста)", key="refresh_models_translate"):
             if not api_key:
                 st.error("❌ Ключ API пуст")
+                st.session_state["model_list_translate"] = []
             else:
-                # Создаём задачу для загрузки моделей
-                task_id = uuid.uuid4().hex
-                server_state['tasks'][task_id] = {
-                    'status': 'loading_models_translate',
-                    'progress': 0.0,
-                    'result': None,
-                    'start_time': time.time(),
-                    'end_time': None,
-                    'type': 'loading_models_translate'
-                }
-                server_state['tasks'] = server_state['tasks']
+                model_list_translate = get_model_list(api_key)
+                st.session_state["model_list_translate"] = model_list_translate
 
-                # Отправляем задачу в пул потоков
-                executor_main.submit(
-                    load_models_translate_task,
-                    task_id,
-                    api_key
-                )
+        if "model_list_translate" not in st.session_state:
+            st.session_state["model_list_translate"] = []
 
-                st.success(f"✅ Задача загрузки моделей для перевода запущена! Ваш Task ID: {task_id}")
-                st.info("Сохраните этот ID, чтобы отслеживать прогресс.")
-
-        # Автоматическое обновление списка моделей через autorefresh
-        st_autorefresh(interval=2000, limit=100, key="autorefresh_models_translate")
-
-        # Получаем список моделей из server_state
-        model_list_translate = []
-        for task_id, task in server_state['tasks'].items():
-            if task.get('status') == 'completed' and task.get('type') == 'loading_models_translate':
-                model_list_translate = task.get('result', [])
-                break
-
-        if len(model_list_translate) > 0:
-            selected_model_translate = st.selectbox("✅ Выберите модель для перевода текста", model_list_translate, key="select_model_translate")
+        if len(st.session_state["model_list_translate"]) > 0:
+            selected_model_translate = st.selectbox("✅ Выберите модель для перевода текста", st.session_state["model_list_translate"], key="select_model_translate")
         else:
             selected_model_translate = st.selectbox(
                 "✅ Выберите модель для перевода текста",
@@ -942,132 +860,38 @@ with tabs[1]:
                     st.warning(f"⚠️ Файл содержит {row_count_translate} строк. Это превышает рекомендованный лимит в 100000.")
                 st.info("🔄 Начинаем перевод, пожалуйста подождите...")
 
-                # Создаем уникальный ID для задачи
-                task_id = uuid.uuid4().hex
-
-                # Инициализируем задачу в server_state
-                server_state['tasks'][task_id] = {
-                    'status': 'queued',
-                    'progress': 0.0,
-                    'result': None,
-                    'start_time': None,
-                    'end_time': None,
-                    'type': 'translation'
-                }
-                server_state['tasks'] = server_state['tasks']
-
                 # Пользовательский промпт для перевода
                 user_prompt_translate = f"Translate the following text from {source_language} to {target_language}:"
 
-                # Отправляем задачу в пул потоков
-                executor_main.submit(
-                    process_translation_file,
-                    task_id,
-                    api_key,
-                    selected_model_translate,
-                    system_prompt_translate,
-                    user_prompt_translate,
-                    df_translate,
-                    title_col_translate,
-                    max_tokens_translate,
-                    temperature_translate,
-                    top_p_translate,
-                    min_p_translate,
-                    top_k_translate,
-                    presence_penalty_translate,
-                    frequency_penalty_translate,
-                    repetition_penalty_translate,
+                # Обработка перевода
+                df_translated = process_translation_file(
+                    api_key=api_key,
+                    model=selected_model_translate,
+                    system_prompt=system_prompt_translate,
+                    user_prompt=user_prompt_translate,
+                    df=df_translate,
+                    title_col=title_col_translate,
+                    max_tokens=max_tokens_translate,
+                    temperature=temperature_translate,
+                    top_p=top_p_translate,
+                    min_p=min_p_translate,
+                    top_k=top_k_translate,
+                    presence_penalty=presence_penalty_translate,
+                    frequency_penalty=frequency_penalty_translate,
+                    repetition_penalty=repetition_penalty_translate,
                     chunk_size=10,
                     max_workers=max_workers_translate
                 )
 
-                st.success(f"✅ Задача запущена! Ваш Task ID: {task_id}")
-                st.info("Сохраните этот ID, чтобы отслеживать прогресс.")
+                st.success("✅ Перевод завершен!")
 
-    # Разделительная линия
-    st.markdown("---")
+                # Скачивание
+                if translate_output_format == "csv":
+                    csv_translated = df_translated.to_csv(index=False).encode("utf-8")
+                    st.download_button("📥 Скачать переведенный файл (CSV)", data=csv_translated, file_name="translated_result.csv", mime="text/csv")
+                else:
+                    txt_translated = df_translated.to_csv(index=False, sep="|", header=False).encode("utf-8")
+                    st.download_button("📥 Скачать переведенный файл (TXT)", data=txt_translated, file_name="translated_result.txt", mime="text/plain")
 
-########################################
-# Вкладка 3: Отслеживание задач
-########################################
-with tabs[2]:
-    st.header("📊 Отслеживание задач")
-
-    tasks = server_state['tasks']
-
-    if not tasks:
-        st.info("Нет активных задач.")
-    else:
-        task_ids = list(tasks.keys())
-        selected_task_id = st.selectbox("🆔 Выберите Task ID для просмотра", task_ids, key="selected_task_id_tracking")
-
-        if selected_task_id:
-            task = tasks[selected_task_id]
-            st.write(f"**Task ID:** {selected_task_id}")
-            st.write(f"**Тип задачи:** {task.get('type')}")
-            st.write(f"**Статус:** {task.get('status')}")
-            progress = task.get('progress', 0.0)
-            st.progress(progress)
-
-            if task.get('start_time'):
-                st.write(f"**Начало:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(task['start_time']))}")
-            if task.get('end_time'):
-                st.write(f"**Завершение:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(task['end_time']))}")
-            else:
-                est_time_left = task.get('estimated_time_left', 'Неизвестно')
-                st.write(f"**Примерное оставшееся время:** {est_time_left}")
-
-            if task.get('status') == 'completed':
-                if task.get('type') == 'processing_text':
-                    st.write("**Результат:** Обработка текста завершена.")
-                    # Предложить скачать результат, если нужно
-                    # Здесь можно добавить ссылку на файл или другие действия
-                elif task.get('type') == 'translation':
-                    st.write("**Результат:** Перевод завершен.")
-                    # Предложить скачать результат, если нужно
-            elif task.get('status') == 'failed':
-                st.error(f"**Ошибка:** {task.get('result')}")
-
-    # Автоматическое обновление страницы для обновления статуса задач
-    st_autorefresh(interval=5000, limit=100, key="autorefresh_tasks_tracking")
-
-#######################################
-# Дополнительные Функции для Загрузки Моделей
-#######################################
-
-def load_models_task(task_id: str, api_key: str):
-    """Функция для загрузки списка моделей и обновления состояния задачи."""
-    tasks = server_state['tasks']
-    tasks[task_id]['status'] = 'running'
-    server_state['tasks'] = tasks
-
-    models = get_model_list(api_key)
-
-    if isinstance(models, list):
-        tasks[task_id]['status'] = 'completed'
-        tasks[task_id]['result'] = models
-    else:
-        tasks[task_id]['status'] = 'failed'
-        tasks[task_id]['result'] = models  # Здесь models содержит сообщение об ошибке
-
-    tasks[task_id]['end_time'] = time.time()
-    server_state['tasks'] = tasks
-
-def load_models_translate_task(task_id: str, api_key: str):
-    """Функция для загрузки списка моделей для перевода и обновления состояния задачи."""
-    tasks = server_state['tasks']
-    tasks[task_id]['status'] = 'running'
-    server_state['tasks'] = tasks
-
-    models = get_model_list(api_key)
-
-    if isinstance(models, list):
-        tasks[task_id]['status'] = 'completed'
-        tasks[task_id]['result'] = models
-    else:
-        tasks[task_id]['status'] = 'failed'
-        tasks[task_id]['result'] = models  # Здесь models содержит сообщение об ошибке
-
-    tasks[task_id]['end_time'] = time.time()
-    server_state['tasks'] = tasks
-
+                st.write("### 📊 Логи")
+                st.write(f"✅ Перевод завершен, строк переведено: {len(df_translated)}")
