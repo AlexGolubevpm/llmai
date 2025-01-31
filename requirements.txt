@@ -1,8 +1,3 @@
 streamlit
-streamlit-authenticator
-supabase
-sqlalchemy
 pandas
-PyYAML
-bcrypt
-python-dotenv
+requests
