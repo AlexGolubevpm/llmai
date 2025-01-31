@@ -12,8 +12,8 @@ import requests
 import json
 
 # Инициализация хранилища задач
-if 'tasks' not in server_state:
-    server_state.tasks = {}
+if not server_state.get('tasks'):
+    server_state.set('tasks', {})
 
 # Инициализация пула потоков
 executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
