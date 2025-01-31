@@ -176,8 +176,8 @@ def process_file(
     """Параллельно обрабатываем загруженный файл построчно (или чанками)."""
 
     tasks = server_state.get('tasks')
-    progress = 0.0
-    tasks[task_id]['progress'] = progress
+    tasks[task_id]['status'] = 'running'
+    tasks[task_id]['start_time'] = time.time()
     server_state.set('tasks', tasks)
 
     results = []
@@ -345,8 +345,8 @@ def process_translation_file(
     """Параллельно переводим загруженный файл построчно (или чанками)."""
 
     tasks = server_state.get('tasks')
-    progress = 0.0
-    tasks[task_id]['progress'] = progress
+    tasks[task_id]['status'] = 'running'
+    tasks[task_id]['start_time'] = time.time()
     server_state.set('tasks', tasks)
 
     results = []
@@ -547,20 +547,29 @@ with tabs[0]:
         if st.button("🔄 Обновить список моделей (Обработка текста)", key="refresh_models_text"):
             if not api_key:
                 st.error("❌ Ключ API пуст")
-                server_state.set('tasks', server_state.get('tasks'))  # Обновление состояния
             else:
-                model_list_text = get_model_list(api_key)
-                server_state.get('tasks')[uuid.uuid4().hex] = {
-                    'status': 'models_loaded',
-                    'progress': 1.0,
-                    'result': model_list_text,
+                # Создаём задачу для загрузки моделей
+                task_id = uuid.uuid4().hex
+                tasks = server_state.get('tasks')
+                tasks[task_id] = {
+                    'status': 'loading_models_text',
+                    'progress': 0.0,
+                    'result': None,
                     'start_time': time.time(),
-                    'end_time': time.time()
+                    'end_time': None,
+                    'type': 'loading_models_text'
                 }
-                server_state.set('tasks', server_state.get('tasks'))
+                server_state.set('tasks', tasks)
 
-        if "model_list_text" not in st.session_state:
-            st.session_state["model_list_text"] = []
+                # Отправляем задачу в пул потоков
+                executor_main.submit(
+                    load_models_task,
+                    task_id,
+                    api_key
+                )
+
+                st.success(f"✅ Задача загрузки моделей запущена! Ваш Task ID: {task_id}")
+                st.info("Сохраните этот ID, чтобы отслеживать прогресс.")
 
         # Автоматическое обновление списка моделей через autorefresh
         st_autorefresh(interval=2000, limit=100, key="autorefresh_models_text")
@@ -569,7 +578,7 @@ with tabs[0]:
         tasks = server_state.get('tasks')
         model_list_text = []
         for task_id, task in tasks.items():
-            if task.get('status') == 'models_loaded':
+            if task.get('status') == 'completed' and task.get('type') == 'loading_models_text':
                 model_list_text = task.get('result', [])
                 break
 
@@ -798,21 +807,29 @@ with tabs[1]:
         if st.button("🔄 Обновить список моделей (Перевод текста)", key="refresh_models_translate"):
             if not api_key:
                 st.error("❌ Ключ API пуст")
-                server_state.set('tasks', server_state.get('tasks'))  # Обновление состояния
             else:
-                model_list_translate = get_model_list(api_key)
-                server_state.get('tasks')[uuid.uuid4().hex] = {
-                    'status': 'models_loaded_translate',
-                    'progress': 1.0,
-                    'result': model_list_translate,
+                # Создаём задачу для загрузки моделей
+                task_id = uuid.uuid4().hex
+                tasks = server_state.get('tasks')
+                tasks[task_id] = {
+                    'status': 'loading_models_translate',
+                    'progress': 0.0,
+                    'result': None,
                     'start_time': time.time(),
-                    'end_time': time.time(),
-                    'type': 'models_translation'
+                    'end_time': None,
+                    'type': 'loading_models_translate'
                 }
-                server_state.set('tasks', server_state.get('tasks'))
+                server_state.set('tasks', tasks)
 
-        if "model_list_translate" not in st.session_state:
-            st.session_state["model_list_translate"] = []
+                # Отправляем задачу в пул потоков
+                executor_main.submit(
+                    load_models_translate_task,
+                    task_id,
+                    api_key
+                )
+
+                st.success(f"✅ Задача загрузки моделей для перевода запущена! Ваш Task ID: {task_id}")
+                st.info("Сохраните этот ID, чтобы отслеживать прогресс.")
 
         # Автоматическое обновление списка моделей через autorefresh
         st_autorefresh(interval=2000, limit=100, key="autorefresh_models_translate")
@@ -821,7 +838,7 @@ with tabs[1]:
         tasks = server_state.get('tasks')
         model_list_translate = []
         for task_id, task in tasks.items():
-            if task.get('status') == 'models_loaded_translate':
+            if task.get('status') == 'completed' and task.get('type') == 'loading_models_translate':
                 model_list_translate = task.get('result', [])
                 break
 
@@ -1021,4 +1038,44 @@ with tabs[2]:
 
     # Автоматическое обновление страницы для обновления статуса задач
     st_autorefresh(interval=5000, limit=100, key="autorefresh_tasks_tracking")
+
+#######################################
+# Дополнительные Функции для Загрузки Моделей
+#######################################
+
+def load_models_task(task_id: str, api_key: str):
+    """Функция для загрузки списка моделей и обновления состояния задачи."""
+    tasks = server_state.get('tasks')
+    tasks[task_id]['status'] = 'running'
+    server_state.set('tasks', tasks)
+
+    models = get_model_list(api_key)
+
+    if isinstance(models, list):
+        tasks[task_id]['status'] = 'completed'
+        tasks[task_id]['result'] = models
+    else:
+        tasks[task_id]['status'] = 'failed'
+        tasks[task_id]['result'] = models  # Здесь models содержит сообщение об ошибке
+
+    tasks[task_id]['end_time'] = time.time()
+    server_state.set('tasks', tasks)
+
+def load_models_translate_task(task_id: str, api_key: str):
+    """Функция для загрузки списка моделей для перевода и обновления состояния задачи."""
+    tasks = server_state.get('tasks')
+    tasks[task_id]['status'] = 'running'
+    server_state.set('tasks', tasks)
+
+    models = get_model_list(api_key)
+
+    if isinstance(models, list):
+        tasks[task_id]['status'] = 'completed'
+        tasks[task_id]['result'] = models
+    else:
+        tasks[task_id]['status'] = 'failed'
+        tasks[task_id]['result'] = models  # Здесь models содержит сообщение об ошибке
+
+    tasks[task_id]['end_time'] = time.time()
+    server_state.set('tasks', tasks)
 
