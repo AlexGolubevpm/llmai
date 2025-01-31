@@ -6,6 +6,9 @@ import pandas as pd
 import time
 import concurrent.futures
 import re
+import threading
+import queue
+from requests.exceptions import RequestException
 
 #######################################
 # 1) НАСТРОЙКИ ПРИЛОЖЕНИЯ
@@ -74,7 +77,7 @@ def chat_completion_request(
     frequency_penalty: float,
     repetition_penalty: float
 ):
-    """Функция для синхронного (не-стримингового) chat-комплишена с retries на 429."""
+    """Функция для синхронного (не-стримингового) chat-комплишена с retries на 429 и обработкой соединений."""
     payload = {
         "model": model,
         "messages": messages,
@@ -94,6 +97,7 @@ def chat_completion_request(
     }
 
     attempts = 0
+    backoff = 2  # Начальное время ожидания в секундах
     while attempts < MAX_RETRIES:
         attempts += 1
         try:
@@ -102,16 +106,20 @@ def chat_completion_request(
                 data = resp.json()
                 return data["choices"][0]["message"].get("content", "")
             elif resp.status_code == 429:
-                # rate limit exceeded, ждем 2 сек
-                time.sleep(2)
-                # и попробуем снова
+                # Превышен лимит запросов, ждем и повторяем
+                time.sleep(backoff)
+                backoff *= 2  # Экспоненциальное увеличение времени ожидания
                 continue
             else:
                 return f"Ошибка: {resp.status_code} - {resp.text}"
-        except Exception as e:
-            return f"Исключение: {e}"
+        except RequestException as e:
+            # Обработка проблем с подключением
+            st.warning(f"Проблемы с подключением. Повторная попытка {attempts}/{MAX_RETRIES}...")
+            time.sleep(backoff)
+            backoff *= 2
+            continue
     # Если все попытки исчерпаны
-    return "Ошибка: Превышено число попыток при 429 RATE_LIMIT."
+    return "Ошибка: Превышено число попыток при 429 RATE_LIMIT или проблемы с подключением."
 
 def process_single_row(
     api_key: str,
@@ -147,7 +155,7 @@ def process_single_row(
         repetition_penalty
     )
 
-    # Постобработка: убираем banned words и двойные кавычки
+    # Постобработка: убираем запрещенные слова и двойные кавычки
     final_response = custom_postprocess_text(raw_response)
     return final_response
 
@@ -168,24 +176,27 @@ def process_file(
     frequency_penalty: float,
     repetition_penalty: float,
     chunk_size: int = 10,  # фиксируем 10 строк в чанке
-    max_workers: int = 5  # Количество потоков
+    max_workers: int = 5,  # Количество потоков
+    progress_queue: queue.Queue = None,
+    stop_flag: str = "text"  # Для различения вкладок
 ):
-    """Параллельно обрабатываем загруженный файл построчно (или чанками)."""
-
-    progress_bar = st.progress(0)
-    time_placeholder = st.empty()  # для отображения оставшегося времени
-
+    """Параллельно обрабатываем загруженный файл построчно (или чанками) с поддержкой остановки."""
     results = []
     total_rows = len(df)
-
-    start_time = time.time()
     lines_processed = 0
 
     for start_idx in range(0, total_rows, chunk_size):
-        chunk_start_time = time.time()
-        end_idx = min(start_idx + chunk_size, total_rows)
+        # Проверка сигнала остановки
+        if stop_flag == "text" and st.session_state['stop_processing_text']:
+            if progress_queue:
+                progress_queue.put("stopped")
+            return None  # Выход из обработки
+        elif stop_flag == "translate" and st.session_state['stop_processing_translate']:
+            if progress_queue:
+                progress_queue.put("stopped")
+            return None  # Выход из обработки
 
-        # Берём индексы строк в этом чанке
+        end_idx = min(start_idx + chunk_size, total_rows)
         chunk_indices = list(df.index[start_idx:end_idx])
         chunk_size_actual = len(chunk_indices)
         chunk_results = [None] * chunk_size_actual
@@ -213,34 +224,45 @@ def process_file(
                 future_to_i[future] = i
 
             for future in concurrent.futures.as_completed(future_to_i):
+                # Проверка сигнала остановки во время обработки
+                if stop_flag == "text" and st.session_state['stop_processing_text']:
+                    if progress_queue:
+                        progress_queue.put("stopped")
+                    return None
+                elif stop_flag == "translate" and st.session_state['stop_processing_translate']:
+                    if progress_queue:
+                        progress_queue.put("stopped")
+                    return None
+
                 i = future_to_i[future]
-                chunk_results[i] = future.result()
+                try:
+                    chunk_results[i] = future.result()
+                except Exception as e:
+                    chunk_results[i] = f"Ошибка: {e}"
 
-        # Расширяем общий список результатов
         results.extend(chunk_results)
-
         lines_processed += chunk_size_actual
-        progress_bar.progress(lines_processed / total_rows)
+        progress = lines_processed / total_rows
+        if stop_flag == "text":
+            st.session_state['processing_progress_text'] = progress
+        else:
+            st.session_state['processing_progress_translate'] = progress
 
-        time_for_chunk = time.time() - chunk_start_time
-        if chunk_size_actual > 0:
-            time_per_line = time_for_chunk / chunk_size_actual
-            lines_left = total_rows - lines_processed
-            if time_per_line > 0:
-                est_time_left_sec = lines_left * time_per_line
-                if est_time_left_sec < 60:
-                    time_text = f"~{est_time_left_sec:.1f} сек."
-                else:
-                    est_time_left_min = est_time_left_sec / 60.0
-                    time_text = f"~{est_time_left_min:.1f} мин."
-                time_placeholder.info(f"Примерное оставшееся время: {time_text}")
+        if progress_queue:
+            progress_queue.put(progress)
 
-    # Создаем копию df с новым столбцом
     df_out = df.copy()
-    df_out["rewrite"] = results
+    if stop_flag == "text":
+        df_out["rewrite"] = results
+        st.session_state['processing_results_text'] = df_out
+        st.session_state['processing_status_text'] = "Завершено"
+    else:
+        df_out["translated_title"] = results
+        st.session_state['processing_results_translate'] = df_out
+        st.session_state['processing_status_translate'] = "Завершено"
 
-    elapsed = time.time() - start_time
-    time_placeholder.success(f"Обработка завершена за {elapsed:.1f} секунд.")
+    if progress_queue:
+        progress_queue.put("completed")
 
     return df_out
 
@@ -259,7 +281,7 @@ def translate_completion_request(
     frequency_penalty: float,
     repetition_penalty: float
 ):
-    """Функция для перевода текста с retries на 429."""
+    """Функция для перевода текста с retries на 429 и обработкой соединений."""
     raw_response = chat_completion_request(
         api_key,
         messages,
@@ -274,7 +296,7 @@ def translate_completion_request(
         repetition_penalty
     )
 
-    # Постобработка: убираем banned words и двойные кавычки
+    # Постобработка: убираем запрещенные слова и двойные кавычки
     final_response = custom_postprocess_text(raw_response)
     return final_response
 
@@ -329,81 +351,32 @@ def process_translation_file(
     frequency_penalty: float,
     repetition_penalty: float,
     chunk_size: int = 10,  # фиксируем 10 строк в чанке
-    max_workers: int = 5  # Количество потоков
+    max_workers: int = 5,  # Количество потоков
+    progress_queue: queue.Queue = None,
+    stop_flag: str = "translate"  # Для различения вкладок
 ):
-    """Параллельно переводим загруженный файл построчно (или чанками)."""
-
-    progress_bar = st.progress(0)
-    time_placeholder = st.empty()  # для отображения оставшегося времени
-
-    results = []
-    total_rows = len(df)
-
-    start_time = time.time()
-    lines_processed = 0
-
-    for start_idx in range(0, total_rows, chunk_size):
-        chunk_start_time = time.time()
-        end_idx = min(start_idx + chunk_size, total_rows)
-
-        # Берём индексы строк в этом чанке
-        chunk_indices = list(df.index[start_idx:end_idx])
-        chunk_size_actual = len(chunk_indices)
-        chunk_results = [None] * chunk_size_actual
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_i = {}
-            for i, row_idx in enumerate(chunk_indices):
-                row_text = str(df.loc[row_idx, title_col])
-                future = executor.submit(
-                    process_translation_single_row,
-                    api_key,
-                    model,
-                    system_prompt,
-                    user_prompt,
-                    row_text,
-                    max_tokens,
-                    temperature,
-                    top_p,
-                    min_p,
-                    top_k,
-                    presence_penalty,
-                    frequency_penalty,
-                    repetition_penalty
-                )
-                future_to_i[future] = i
-
-            for future in concurrent.futures.as_completed(future_to_i):
-                i = future_to_i[future]
-                chunk_results[i] = future.result()
-
-        # Расширяем общий список результатов
-        results.extend(chunk_results)
-
-        lines_processed += chunk_size_actual
-        progress_bar.progress(lines_processed / total_rows)
-
-        time_for_chunk = time.time() - chunk_start_time
-        if chunk_size_actual > 0:
-            time_per_line = time_for_chunk / chunk_size_actual
-            lines_left = total_rows - lines_processed
-            if time_per_line > 0:
-                est_time_left_sec = lines_left * time_per_line
-                if est_time_left_sec < 60:
-                    time_text = f"~{est_time_left_sec:.1f} сек."
-                else:
-                    est_time_left_min = est_time_left_sec / 60.0
-                    time_text = f"~{est_time_left_min:.1f} мин."
-                time_placeholder.info(f"Примерное оставшееся время: {time_text}")
-
-    # Создаем копию df с новым столбцом
-    df_out = df.copy()
-    df_out["translated_title"] = results
-
-    elapsed = time.time() - start_time
-    time_placeholder.success(f"Перевод завершен за {elapsed:.1f} секунд.")
-
-    return df_out
+    """Параллельно переводим загруженный файл построчно (или чанками) с поддержкой остановки."""
+    return process_file(
+        api_key=api_key,
+        model=model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        df=df,
+        title_col=title_col,
+        response_format="csv",  # уже не используем, но пусть есть
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        min_p=min_p,
+        top_k=top_k,
+        presence_penalty=presence_penalty,
+        frequency_penalty=frequency_penalty,
+        repetition_penalty=repetition_penalty,
+        chunk_size=chunk_size,  # фиксируем 10 строк в чанке
+        max_workers=max_workers,
+        progress_queue=progress_queue,
+        stop_flag=stop_flag
+    )
 
 #######################################
 # 3) ПРЕСЕТЫ МОДЕЛЕЙ
@@ -458,7 +431,90 @@ PRESETS = {
 }
 
 #######################################
-# 4) ИНТЕРФЕЙС
+# 4) ИНИЦИАЛИЗАЦИЯ СТЕЙШН СТАЙТ
+#######################################
+
+# Инициализация переменных состояния сессии
+if 'processing_thread_text' not in st.session_state:
+    st.session_state['processing_thread_text'] = None
+
+if 'stop_processing_text' not in st.session_state:
+    st.session_state['stop_processing_text'] = False
+
+if 'processing_results_text' not in st.session_state:
+    st.session_state['processing_results_text'] = None
+
+if 'processing_progress_text' not in st.session_state:
+    st.session_state['processing_progress_text'] = 0.0
+
+if 'processing_status_text' not in st.session_state:
+    st.session_state['processing_status_text'] = "Idle"
+
+# Для вкладки перевода
+if 'processing_thread_translate' not in st.session_state:
+    st.session_state['processing_thread_translate'] = None
+
+if 'stop_processing_translate' not in st.session_state:
+    st.session_state['stop_processing_translate'] = False
+
+if 'processing_results_translate' not in st.session_state:
+    st.session_state['processing_results_translate'] = None
+
+if 'processing_progress_translate' not in st.session_state:
+    st.session_state['processing_progress_translate'] = 0.0
+
+if 'processing_status_translate' not in st.session_state:
+    st.session_state['processing_status_translate'] = "Idle"
+
+#######################################
+# 5) ФУНКЦИЯ ДЛЯ ФОНОВОЙ ОБРАБОТКИ
+#######################################
+
+def background_process(
+    api_key,
+    model,
+    system_prompt,
+    user_prompt,
+    df,
+    title_col,
+    response_format,
+    max_tokens,
+    temperature,
+    top_p,
+    min_p,
+    top_k,
+    presence_penalty,
+    frequency_penalty,
+    repetition_penalty,
+    chunk_size,
+    max_workers,
+    progress_queue,
+    stop_flag
+):
+    process_file(
+        api_key=api_key,
+        model=model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        df=df,
+        title_col=title_col,
+        response_format=response_format,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        min_p=min_p,
+        top_k=top_k,
+        presence_penalty=presence_penalty,
+        frequency_penalty=frequency_penalty,
+        repetition_penalty=repetition_penalty,
+        chunk_size=chunk_size,
+        max_workers=max_workers,
+        progress_queue=progress_queue,
+        stop_flag=stop_flag
+    )
+
+#######################################
+# 6) ИНТЕРФЕЙС
 #######################################
 
 st.title("🧠 Novita AI Batch Processor")
@@ -650,48 +706,102 @@ with tabs[0]:
             # Ползунок для выбора кол-ва потоков
             max_workers_text = st.slider("🔄 Потоки (max_workers)", min_value=1, max_value=20, value=5, key="max_workers_text")
 
-        if st.button("▶️ Запустить обработку файла (Обработка текста)", key="process_file_text"):
-            if not api_key:
-                st.error("❌ API Key не указан!")
-            else:
-                row_count = len(df_text)
-                if row_count > 100000:
-                    st.warning(f"⚠️ Файл содержит {row_count} строк. Это превышает рекомендованный лимит в 100000.")
-                st.info("🔄 Начинаем обработку, пожалуйста подождите...")
+        # Разделительная линия
+        st.markdown("---")
+        
+        # Прогресс-бар и статус
+        progress_bar = st.progress(st.session_state['processing_progress_text'])
+        status_text = st.empty()
+        status_text.text(f"Статус: {st.session_state['processing_status_text']}")
 
-                df_out_text = process_file(
-                    api_key=api_key,
-                    model=selected_model_text,
-                    system_prompt=system_prompt_text,
-                    user_prompt=user_prompt_text,
-                    df=df_text,
-                    title_col=title_col_text,
-                    response_format="csv",  # уже не используем, но пусть есть
-                    max_tokens=max_tokens_text,
-                    temperature=temperature_text,
-                    top_p=top_p_text,
-                    min_p=min_p_text,
-                    top_k=top_k_text,
-                    presence_penalty=presence_penalty_text,
-                    frequency_penalty=frequency_penalty_text,
-                    repetition_penalty=repetition_penalty_text,
-                    chunk_size=10,  # фиксируем 10 строк в чанке
-                    max_workers=max_workers_text
-                )
-
-                st.success("✅ Обработка завершена!")
-
-                # Скачивание
-                output_format = st.selectbox("📥 Формат вывода", ["csv", "txt"], key="output_format_text")
-                if output_format == "csv":
-                    csv_out_text = df_out_text.to_csv(index=False).encode("utf-8")
-                    st.download_button("📥 Скачать результат (CSV)", data=csv_out_text, file_name="result.csv", mime="text/csv")
+        # Кнопки: Запуск и Остановка обработки
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("▶️ Запустить обработку файла (Обработка текста)", key="process_file_text"):
+                if not api_key:
+                    st.error("❌ API Key не указан!")
                 else:
-                    txt_out_text = df_out_text.to_csv(index=False, sep="|", header=False).encode("utf-8")
-                    st.download_button("📥 Скачать результат (TXT)", data=txt_out_text, file_name="result.txt", mime="text/plain")
+                    row_count = len(df_text)
+                    if row_count > 100000:
+                        st.warning(f"⚠️ Файл содержит {row_count} строк. Это превышает рекомендованный лимит в 100000.")
+                    
+                    # Сброс флага остановки и результатов
+                    st.session_state['stop_processing_text'] = False
+                    st.session_state['processing_results_text'] = None
+                    st.session_state['processing_progress_text'] = 0.0
+                    st.session_state['processing_status_text'] = "Запущено"
 
-                st.write("### 📊 Логи")
-                st.write(f"✅ Обработка завершена, строк обработано: {len(df_out_text)}")
+                    # Создание очереди для получения обновлений прогресса
+                    progress_queue = queue.Queue()
+
+                    # Запуск фонового потока
+                    thread = threading.Thread(
+                        target=background_process,
+                        args=(
+                            api_key,
+                            selected_model_text,
+                            system_prompt_text,
+                            user_prompt_text,
+                            df_text,
+                            title_col_text,
+                            "csv",
+                            max_tokens_text,
+                            temperature_text,
+                            top_p_text,
+                            min_p_text,
+                            top_k_text,
+                            presence_penalty_text,
+                            frequency_penalty_text,
+                            repetition_penalty_text,
+                            10,
+                            max_workers_text,
+                            progress_queue,
+                            "text"  # Флаг для обработки текста
+                        )
+                    )
+                    st.session_state['processing_thread_text'] = thread
+                    thread.start()
+                    
+                    st.success("✅ Обработка началась в фоне!")
+
+        with col2:
+            if st.button("🛑 Стоп обработку (Обработка текста)", key="stop_process_text"):
+                if st.session_state['processing_thread_text'] and st.session_state['processing_thread_text'].is_alive():
+                    st.session_state['stop_processing_text'] = True
+                    st.session_state['processing_status_text'] = "Останавливается..."
+                    st.success("✅ Запрос на остановку отправлен.")
+
+        # Мониторинг прогресса и статуса
+        if st.session_state['processing_thread_text'] and st.session_state['processing_thread_text'].is_alive():
+            try:
+                while not progress_queue.empty():
+                    msg = progress_queue.get_nowait()
+                    if isinstance(msg, float):
+                        st.session_state['processing_progress_text'] = msg
+                        progress_bar.progress(msg)
+                    elif msg == "completed":
+                        st.session_state['processing_status_text'] = "Завершено"
+                        progress_bar.progress(1.0)
+                    elif msg == "stopped":
+                        st.session_state['processing_status_text'] = "Остановлено"
+            except queue.Empty:
+                pass
+        elif st.session_state['processing_results_text'] is not None:
+            # Обработка завершена
+            df_out_text = st.session_state['processing_results_text']
+            st.success("✅ Обработка завершена!")
+
+            # Скачивание
+            output_format = st.selectbox("📥 Формат вывода", ["csv", "txt"], key="output_format_text")
+            if output_format == "csv":
+                csv_out_text = df_out_text.to_csv(index=False).encode("utf-8")
+                st.download_button("📥 Скачать результат (CSV)", data=csv_out_text, file_name="result.csv", mime="text/csv")
+            else:
+                txt_out_text = df_out_text.to_csv(index=False, sep="|", header=False).encode("utf-8")
+                st.download_button("📥 Скачать результат (TXT)", data=txt_out_text, file_name="result.txt", mime="text/plain")
+
+            st.write("### 📊 Логи")
+            st.write(f"✅ Обработка завершена, строк обработано: {len(df_out_text)}")
 
 ########################################
 # Вкладка 2: Перевод текста
@@ -847,51 +957,105 @@ with tabs[1]:
             # Ползунок для выбора кол-ва потоков
             max_workers_translate = st.slider("🔄 Потоки (max_workers) для перевода", min_value=1, max_value=20, value=5, key="max_workers_translate")
 
-        if st.button("▶️ Начать перевод", key="start_translation"):
-            if not api_key:
-                st.error("❌ API Key не указан!")
-            elif source_language == target_language:
-                st.error("❌ Исходный и целевой языки должны отличаться!")
-            elif not title_col_translate:
-                st.error("❌ Не выбрана колонка для перевода!")
-            else:
-                row_count_translate = len(df_translate)
-                if row_count_translate > 100000:
-                    st.warning(f"⚠️ Файл содержит {row_count_translate} строк. Это превышает рекомендованный лимит в 100000.")
-                st.info("🔄 Начинаем перевод, пожалуйста подождите...")
+        # Разделительная линия
+        st.markdown("---")
+        
+        # Прогресс-бар и статус
+        progress_bar_translate = st.progress(st.session_state['processing_progress_translate'])
+        status_text_translate = st.empty()
+        status_text_translate.text(f"Статус: {st.session_state['processing_status_translate']}")
 
-                # Пользовательский промпт для перевода
-                user_prompt_translate = f"Translate the following text from {source_language} to {target_language}:"
-
-                # Обработка перевода
-                df_translated = process_translation_file(
-                    api_key=api_key,
-                    model=selected_model_translate,
-                    system_prompt=system_prompt_translate,
-                    user_prompt=user_prompt_translate,
-                    df=df_translate,
-                    title_col=title_col_translate,
-                    max_tokens=max_tokens_translate,
-                    temperature=temperature_translate,
-                    top_p=top_p_translate,
-                    min_p=min_p_translate,
-                    top_k=top_k_translate,
-                    presence_penalty=presence_penalty_translate,
-                    frequency_penalty=frequency_penalty_translate,
-                    repetition_penalty=repetition_penalty_translate,
-                    chunk_size=10,
-                    max_workers=max_workers_translate
-                )
-
-                st.success("✅ Перевод завершен!")
-
-                # Скачивание
-                if translate_output_format == "csv":
-                    csv_translated = df_translated.to_csv(index=False).encode("utf-8")
-                    st.download_button("📥 Скачать переведенный файл (CSV)", data=csv_translated, file_name="translated_result.csv", mime="text/csv")
+        # Кнопки: Запуск и Остановка перевода
+        col1_trans, col2_trans = st.columns(2)
+        with col1_trans:
+            if st.button("▶️ Начать перевод", key="start_translation"):
+                if not api_key:
+                    st.error("❌ API Key не указан!")
+                elif source_language == target_language:
+                    st.error("❌ Исходный и целевой языки должны отличаться!")
+                elif not title_col_translate:
+                    st.error("❌ Не выбрана колонка для перевода!")
                 else:
-                    txt_translated = df_translated.to_csv(index=False, sep="|", header=False).encode("utf-8")
-                    st.download_button("📥 Скачать переведенный файл (TXT)", data=txt_translated, file_name="translated_result.txt", mime="text/plain")
+                    row_count_translate = len(df_translate)
+                    if row_count_translate > 100000:
+                        st.warning(f"⚠️ Файл содержит {row_count_translate} строк. Это превышает рекомендованный лимит в 100000.")
+                    
+                    # Сброс флага остановки и результатов
+                    st.session_state['stop_processing_translate'] = False
+                    st.session_state['processing_results_translate'] = None
+                    st.session_state['processing_progress_translate'] = 0.0
+                    st.session_state['processing_status_translate'] = "Запущено"
 
-                st.write("### 📊 Логи")
-                st.write(f"✅ Перевод завершен, строк переведено: {len(df_translated)}")
+                    # Создание очереди для получения обновлений прогресса
+                    progress_queue_translate = queue.Queue()
+
+                    # Пользовательский промпт для перевода
+                    user_prompt_translate = f"Translate the following text from {source_language} to {target_language}:"
+
+                    # Запуск фонового потока
+                    thread_translate = threading.Thread(
+                        target=background_process,
+                        args=(
+                            api_key,
+                            selected_model_translate,
+                            system_prompt_translate,
+                            user_prompt_translate,
+                            df_translate,
+                            title_col_translate,
+                            "csv",
+                            max_tokens_translate,
+                            temperature_translate,
+                            top_p_translate,
+                            min_p_translate,
+                            top_k_translate,
+                            presence_penalty_translate,
+                            frequency_penalty_translate,
+                            repetition_penalty_translate,
+                            10,
+                            max_workers_translate,
+                            progress_queue_translate,
+                            "translate"  # Флаг для перевода
+                        )
+                    )
+                    st.session_state['processing_thread_translate'] = thread_translate
+                    thread_translate.start()
+                    
+                    st.success("✅ Перевод начался в фоне!")
+
+        with col2_trans:
+            if st.button("🛑 Стоп перевод (Перевод текста)", key="stop_process_translate"):
+                if st.session_state['processing_thread_translate'] and st.session_state['processing_thread_translate'].is_alive():
+                    st.session_state['stop_processing_translate'] = True
+                    st.session_state['processing_status_translate'] = "Останавливается..."
+                    st.success("✅ Запрос на остановку отправлен.")
+
+        # Мониторинг прогресса и статуса
+        if st.session_state['processing_thread_translate'] and st.session_state['processing_thread_translate'].is_alive():
+            try:
+                while not progress_queue_translate.empty():
+                    msg = progress_queue_translate.get_nowait()
+                    if isinstance(msg, float):
+                        st.session_state['processing_progress_translate'] = msg
+                        progress_bar_translate.progress(msg)
+                    elif msg == "completed":
+                        st.session_state['processing_status_translate'] = "Завершено"
+                        progress_bar_translate.progress(1.0)
+                    elif msg == "stopped":
+                        st.session_state['processing_status_translate'] = "Остановлено"
+            except queue.Empty:
+                pass
+        elif st.session_state['processing_results_translate'] is not None:
+            # Перевод завершен
+            df_translated = st.session_state['processing_results_translate']
+            st.success("✅ Перевод завершен!")
+
+            # Скачивание
+            if translate_output_format == "csv":
+                csv_translated = df_translated.to_csv(index=False).encode("utf-8")
+                st.download_button("📥 Скачать переведенный файл (CSV)", data=csv_translated, file_name="translated_result.csv", mime="text/csv")
+            else:
+                txt_translated = df_translated.to_csv(index=False, sep="|", header=False).encode("utf-8")
+                st.download_button("📥 Скачать переведенный файл (TXT)", data=txt_translated, file_name="translated_result.txt", mime="text/plain")
+
+            st.write("### 📊 Логи")
+            st.write(f"✅ Перевод завершен, строк переведено: {len(df_translated)}")
