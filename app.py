@@ -1,11 +1,12 @@
 import streamlit as st
 import streamlit_server_state as server_state
+from streamlit_autorefresh import st_autorefresh
 import concurrent.futures
 import uuid
 import time
 import pandas as pd
-import re
-from streamlit_autorefresh import st_autorefresh
+import requests
+import json
 
 # Ваши импортированные модули и функции
 import requests
