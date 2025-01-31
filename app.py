@@ -1,11 +1,13 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import requests
 import json
 import pandas as pd
 import time
 import concurrent.futures
 import re
+import threading
+
+from supabase import create_client, Client
 
 #######################################
 # 1) НАСТРОЙКИ ПРИЛОЖЕНИЯ
@@ -25,7 +27,18 @@ MAX_RETRIES = 3
 st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
 
 #######################################
-# 2) ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# 2) ИНТЕГРАЦИЯ SUPABASE
+#######################################
+
+# Ваш Supabase URL и API ключ
+SUPABASE_URL = "https://xetvvhnbakkisdwwmpan.supabase.co"
+SUPABASE_API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhldHZ2aG5iYWtraXNkd3dtcGFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzgzMjUxMjIsImV4cCI6MjA1MzkwMTEyMn0.lJO6UqktADmQ9YisbEdrrqbpWa7GmAbF71LQfvM7eEs"
+
+# Создание клиента Supabase
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_API_KEY)
+
+#######################################
+# 3) ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 #######################################
 
 def custom_postprocess_text(text: str) -> str:
@@ -81,11 +94,11 @@ def chat_completion_request(
         "max_tokens": max_tokens,
         "temperature": temperature,
         "top_p": top_p,
+        "min_p": min_p,
         "top_k": top_k,
         "presence_penalty": presence_penalty,
         "frequency_penalty": frequency_penalty,
-        "repetition_penalty": repetition_penalty,
-        "min_p": min_p
+        "repetition_penalty": repetition_penalty
     }
 
     headers = {
@@ -406,7 +419,7 @@ def process_translation_file(
     return df_out
 
 #######################################
-# 3) ПРЕСЕТЫ МОДЕЛЕЙ
+# 4) ПРЕСЕТЫ МОДЕЛЕЙ
 #######################################
 
 PRESETS = {
@@ -458,7 +471,7 @@ PRESETS = {
 }
 
 #######################################
-# 4) ИНТЕРФЕЙС
+# 5) ИНТЕРФЕЙС
 #######################################
 
 st.title("🧠 Novita AI Batch Processor")
@@ -895,3 +908,4 @@ with tabs[1]:
 
                 st.write("### 📊 Логи")
                 st.write(f"✅ Перевод завершен, строк переведено: {len(df_translated)}")
+
