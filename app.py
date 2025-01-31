@@ -1,11 +1,23 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import requests
 import json
 import pandas as pd
 import time
 import concurrent.futures
 import re
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Index
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+from datetime import datetime
+import logging
+
+# Настройка логирования
+logging.basicConfig(
+    filename='app.log',
+    filemode='a',
+    format='%(asctime)s %(levelname)s:%(message)s',
+    level=logging.INFO
+)
 
 #######################################
 # 1) НАСТРОЙКИ ПРИЛОЖЕНИЯ
@@ -16,16 +28,94 @@ API_BASE_URL = "https://api.novita.ai/v3/openai"
 LIST_MODELS_ENDPOINT = f"{API_BASE_URL}/models"
 CHAT_COMPLETIONS_ENDPOINT = f"{API_BASE_URL}/chat/completions"
 
-# Ключ по умолчанию (НЕБЕЗОПАСНО в реальном проде)
-DEFAULT_API_KEY = "sk_MyidbhnT9jXzw-YDymhijjY8NF15O0Qy7C36etNTAxE"
-
 # Максимальное количество повторных попыток при 429 (Rate Limit)
 MAX_RETRIES = 3
 
 st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
 
 #######################################
-# 2) ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# 2) НАСТРОЙКА ОБЛАЧНОЙ БАЗЫ ДАННЫХ SUPABASE
+#######################################
+
+# Получение строки подключения из Streamlit Secrets
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+
+# Строка подключения к PostgreSQL
+DATABASE_URL = f"postgresql://{SUPABASE_URL.split('//')[1].split(':')[0]}:{SUPABASE_KEY}@{SUPABASE_URL.split('//')[1].split('/')[0]}/postgres"
+
+# Настройка SQLAlchemy
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+Base = declarative_base()
+
+class HistoryEntry(Base):
+    __tablename__ = 'history'
+    id = Column(Integer, primary_key=True)
+    task_type = Column(String, nullable=False)  # 'processing' или 'translation'
+    input_text = Column(Text, nullable=False)
+    output_text = Column(Text, nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    
+    __table_args__ = (
+        Index('idx_task_type', 'task_type'),
+        Index('idx_timestamp', 'timestamp'),
+    )
+
+Base.metadata.create_all(engine)
+SessionLocal = sessionmaker(bind=engine)
+
+def add_history(task_type, input_text, output_text):
+    session = SessionLocal()
+    try:
+        entry = HistoryEntry(
+            task_type=task_type,
+            input_text=input_text,
+            output_text=output_text
+        )
+        session.add(entry)
+        session.commit()
+        logging.info(f"Добавлена запись ID {entry.id} - Тип: {task_type}")
+    except Exception as e:
+        session.rollback()
+        logging.error(f"Ошибка при добавлении записи: {e}")
+        st.error(f"Ошибка при добавлении записи в историю: {e}")
+    finally:
+        session.close()
+
+def get_history(task_type=None):
+    session = SessionLocal()
+    try:
+        if task_type:
+            return session.query(HistoryEntry).filter(HistoryEntry.task_type == task_type).order_by(HistoryEntry.timestamp.desc()).all()
+        else:
+            return session.query(HistoryEntry).order_by(HistoryEntry.timestamp.desc()).all()
+    except Exception as e:
+        logging.error(f"Ошибка при получении истории: {e}")
+        st.error(f"Ошибка при получении истории: {e}")
+        return []
+    finally:
+        session.close()
+
+def delete_history(entry_id):
+    session = SessionLocal()
+    try:
+        entry = session.query(HistoryEntry).filter(HistoryEntry.id == entry_id).first()
+        if entry:
+            session.delete(entry)
+            session.commit()
+            logging.info(f"Удалена запись ID {entry.id}")
+            return True
+        return False
+    except Exception as e:
+        session.rollback()
+        logging.error(f"Ошибка при удалении записи: {e}")
+        st.error(f"Ошибка при удалении записи из истории: {e}")
+        return False
+    finally:
+        session.close()
+
+#######################################
+# 3) ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 #######################################
 
 def custom_postprocess_text(text: str) -> str:
@@ -33,13 +123,9 @@ def custom_postprocess_text(text: str) -> str:
     Убираем 'fucking' (в любом регистре) только в начале строки.
     Также удаляем все двойные кавычки из текста.
     """
-    # Удаляем 'fucking' в начале строки
     pattern_start = re.compile(r'^(fucking\s*)', re.IGNORECASE)
     text = pattern_start.sub('', text)
-    
-    # Удаляем все двойные кавычки
     text = text.replace('"', '')
-    
     return text
 
 def get_model_list(api_key: str):
@@ -102,9 +188,8 @@ def chat_completion_request(
                 data = resp.json()
                 return data["choices"][0]["message"].get("content", "")
             elif resp.status_code == 429:
-                # rate limit exceeded, ждем 2 сек
+                # Rate limit exceeded, ждем 2 сек
                 time.sleep(2)
-                # и попробуем снова
                 continue
             else:
                 return f"Ошибка: {resp.status_code} - {resp.text}"
@@ -147,7 +232,7 @@ def process_single_row(
         repetition_penalty
     )
 
-    # Постобработка: убираем banned words и двойные кавычки
+    # Постобработка: убираем запрещенные слова и двойные кавычки
     final_response = custom_postprocess_text(raw_response)
     return final_response
 
@@ -242,6 +327,14 @@ def process_file(
     elapsed = time.time() - start_time
     time_placeholder.success(f"Обработка завершена за {elapsed:.1f} секунд.")
 
+    # Сохранение в историю
+    for _, row in df_out.iterrows():
+        add_history(
+            task_type="processing",
+            input_text=row[title_col],  # Используем значение из колонки заголовка
+            output_text=row["rewrite"]
+        )
+
     return df_out
 
 # ======= Новые функции для перевода =======
@@ -274,7 +367,7 @@ def translate_completion_request(
         repetition_penalty
     )
 
-    # Постобработка: убираем banned words и двойные кавычки
+    # Постобработка: убираем запрещенные слова и двойные кавычки
     final_response = custom_postprocess_text(raw_response)
     return final_response
 
@@ -328,7 +421,7 @@ def process_translation_file(
     presence_penalty: float,
     frequency_penalty: float,
     repetition_penalty: float,
-    chunk_size: int = 10,  # фиксируем 10 строк в чанке
+    chunk_size: int = 10,  # фиксируем 10 строк в чанку
     max_workers: int = 5  # Количество потоков
 ):
     """Параллельно переводим загруженный файл построчно (или чанками)."""
@@ -403,10 +496,18 @@ def process_translation_file(
     elapsed = time.time() - start_time
     time_placeholder.success(f"Перевод завершен за {elapsed:.1f} секунд.")
 
+    # Сохранение в историю
+    for _, row in df_out.iterrows():
+        add_history(
+            task_type="translation",
+            input_text=row[title_col],  # Используем значение из колонки заголовка
+            output_text=row["translated_title"]
+        )
+
     return df_out
 
 #######################################
-# 3) ПРЕСЕТЫ МОДЕЛЕЙ
+# 4) ПРЕСЕТЫ МОДЕЛЕЙ
 #######################################
 
 PRESETS = {
@@ -458,14 +559,10 @@ PRESETS = {
 }
 
 #######################################
-# 4) ИНТЕРФЕЙС
+# 5) ИНТЕРФЕЙС
 #######################################
 
 st.title("🧠 Novita AI Batch Processor")
-
-# Поле ввода API Key, доступное во всех вкладках
-st.sidebar.header("🔑 Настройки API")
-api_key = st.sidebar.text_input("API Key", value=DEFAULT_API_KEY, type="password")
 
 # Создаем вкладки для разделения функционала
 tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста"])
@@ -520,6 +617,7 @@ with tabs[0]:
         st.caption("🔄 Список моделей загружается из API Novita AI")
 
         if st.button("🔄 Обновить список моделей (Обработка текста)", key="refresh_models_text"):
+            api_key = st.secrets["SUPABASE_KEY"]  # Используем API ключ Supabase, но вероятно, нужно использовать Novita API ключ
             if not api_key:
                 st.error("❌ Ключ API пуст")
                 st.session_state["model_list_text"] = []
@@ -568,6 +666,7 @@ with tabs[0]:
     user_prompt_single_text = st.text_area("Введите ваш промпт для одиночной генерации", key="user_prompt_single_text")
 
     if st.button("🚀 Отправить одиночный промпт (Обработка текста)", key="submit_single_text"):
+        api_key = st.secrets["SUPABASE_KEY"]  # Вероятно, нужно использовать Novita API ключ
         if not api_key:
             st.error("❌ API Key не указан!")
         elif not user_prompt_single_text.strip():
@@ -595,6 +694,13 @@ with tabs[0]:
             final_response = custom_postprocess_text(raw_response)
             st.success("✅ Результат получен!")
             st.text_area("📄 Ответ от модели", value=final_response, height=200)
+
+            # Сохранение в историю
+            add_history(
+                task_type="processing",
+                input_text=user_prompt_single_text,
+                output_text=final_response
+            )
 
     # Разделительная линия
     st.markdown("---")
@@ -651,6 +757,7 @@ with tabs[0]:
             max_workers_text = st.slider("🔄 Потоки (max_workers)", min_value=1, max_value=20, value=5, key="max_workers_text")
 
         if st.button("▶️ Запустить обработку файла (Обработка текста)", key="process_file_text"):
+            api_key = st.secrets["SUPABASE_KEY"]  # Вероятно, нужно использовать Novita API ключ
             if not api_key:
                 st.error("❌ API Key не указан!")
             else:
@@ -675,7 +782,7 @@ with tabs[0]:
                     presence_penalty=presence_penalty_text,
                     frequency_penalty=frequency_penalty_text,
                     repetition_penalty=repetition_penalty_text,
-                    chunk_size=10,  # фиксируем 10 строк в чанке
+                    chunk_size=10,  # фиксируем 10 строк в чанку
                     max_workers=max_workers_text
                 )
 
@@ -743,6 +850,7 @@ with tabs[1]:
         st.caption("🔄 Список моделей загружается из API Novita AI")
 
         if st.button("🔄 Обновить список моделей (Перевод текста)", key="refresh_models_translate"):
+            api_key = st.secrets["SUPABASE_KEY"]  # Вероятно, нужно использовать Novita API ключ
             if not api_key:
                 st.error("❌ Ключ API пуст")
                 st.session_state["model_list_translate"] = []
@@ -848,6 +956,7 @@ with tabs[1]:
             max_workers_translate = st.slider("🔄 Потоки (max_workers) для перевода", min_value=1, max_value=20, value=5, key="max_workers_translate")
 
         if st.button("▶️ Начать перевод", key="start_translation"):
+            api_key = st.secrets["SUPABASE_KEY"]  # Вероятно, нужно использовать Novita API ключ
             if not api_key:
                 st.error("❌ API Key не указан!")
             elif source_language == target_language:
@@ -895,3 +1004,67 @@ with tabs[1]:
 
                 st.write("### 📊 Логи")
                 st.write(f"✅ Перевод завершен, строк переведено: {len(df_translated)}")
+
+########################################
+# Интерфейс для просмотра и управления историей
+########################################
+
+st.sidebar.header("📚 История Обращений")
+
+# Выбор типа задачи для фильтрации истории
+task_types = ["Все", "Обработка текста", "Перевод текста"]
+selected_task_type = st.sidebar.selectbox("Выберите тип задачи для просмотра истории", task_types)
+
+# Получение исторических записей
+if selected_task_type == "Все":
+    history_entries = get_history()
+else:
+    history_entries = get_history(task_type=selected_task_type.lower())
+
+st.sidebar.write(f"### История для {selected_task_type}")
+
+if history_entries:
+    # Преобразование в DataFrame для удобства отображения
+    data = {
+        "ID": [entry.id for entry in history_entries],
+        "Тип задачи": [entry.task_type.capitalize() for entry in history_entries],
+        "Ввод": [entry.input_text for entry in history_entries],
+        "Вывод": [entry.output_text for entry in history_entries],
+        "Время": [entry.timestamp.strftime('%Y-%m-%d %H:%M:%S') for entry in history_entries]
+    }
+    df_history = pd.DataFrame(data)
+
+    # Пагинация
+    records_per_page = st.sidebar.selectbox("Записей на странице", [10, 20, 50, 100], index=0)
+    page_number = st.sidebar.number_input("Номер страницы", min_value=1, step=1, value=1)
+
+    # Вычисление записей для отображения
+    start_idx = (page_number - 1) * records_per_page
+    end_idx = start_idx + records_per_page
+    current_page_entries = history_entries[start_idx:end_idx]
+
+    # Преобразование в DataFrame
+    data_page = {
+        "ID": [entry.id for entry in current_page_entries],
+        "Тип задачи": [entry.task_type.capitalize() for entry in current_page_entries],
+        "Ввод": [entry.input_text for entry in current_page_entries],
+        "Вывод": [entry.output_text for entry in current_page_entries],
+        "Время": [entry.timestamp.strftime('%Y-%m-%d %H:%M:%S') for entry in current_page_entries]
+    }
+    df_history_page = pd.DataFrame(data_page)
+
+    st.sidebar.dataframe(df_history_page)
+
+    # Форма для удаления записи по ID
+    with st.sidebar.form(key='delete_form'):
+        delete_id = st.number_input("Введите ID записи для удаления", min_value=1, step=1, key='delete_id')
+        submit_delete = st.form_submit_button("Удалить запись")
+
+    if submit_delete:
+        if delete_history(delete_id):
+            st.sidebar.success(f"Запись ID {delete_id} успешно удалена.")
+            st.experimental_rerun()
+        else:
+            st.sidebar.error(f"Не удалось удалить запись ID {delete_id}. Проверьте правильность ID.")
+else:
+    st.sidebar.info("История обращений пуста.")
