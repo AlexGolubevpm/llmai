@@ -2,3 +2,4 @@ streamlit
 pandas
 requests
 streamlit-server-state
+streamlit-autorefresh
