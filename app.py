@@ -7,146 +7,160 @@ import time
 import pandas as pd
 import requests
 import json
+import re
 
-# Ваши импортированные модули и функции
-import requests
-import json
+#######################################
+# 1) НАСТРОЙКИ ПРИЛОЖЕНИЯ
+#######################################
 
-# Инициализация хранилища задач
-if not server_state.get('tasks'):
-    server_state.set('tasks', {})
+# Базовый URL API Novita
+API_BASE_URL = "https://api.novita.ai/v3/openai"
+LIST_MODELS_ENDPOINT = f"{API_BASE_URL}/models"
+CHAT_COMPLETIONS_ENDPOINT = f"{API_BASE_URL}/chat/completions"
 
-# Инициализация пула потоков
-executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
+# Ключ по умолчанию (НЕБЕЗОПАСНО в реальном проде)
+DEFAULT_API_KEY = "sk_MyidbhnT9jXzw-YDymhijjY8NF15O0Qy7C36etNTAxE"
 
-# Функция для отправки задач в фоновый режим
-def submit_task(function, *args, **kwargs):
-    task_id = str(uuid.uuid4())
-    tasks = server_state.get('tasks')
-    tasks[task_id] = {
-        'status': 'running',
-        'progress': 0.0,
-        'result': None,
-        'start_time': time.time(),
-        'end_time': None
+# Максимальное количество повторных попыток при 429 (Rate Limit)
+MAX_RETRIES = 3
+
+st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
+
+#######################################
+# 2) ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+#######################################
+
+def custom_postprocess_text(text: str) -> str:
+    """
+    Убираем 'fucking' (в любом регистре) только в начале строки.
+    Также удаляем все двойные кавычки из текста.
+    """
+    # Удаляем 'fucking' в начале строки
+    pattern_start = re.compile(r'^(fucking\s*)', re.IGNORECASE)
+    text = pattern_start.sub('', text)
+    
+    # Удаляем все двойные кавычки
+    text = text.replace('"', '')
+    
+    return text
+
+def get_model_list(api_key: str):
+    """Загружаем список доступных моделей через эндпоинт Novita AI"""
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
     }
-    server_state.set('tasks', tasks)
-    
-    def task_wrapper(task_id, *args, **kwargs):
+    try:
+        resp = requests.get(LIST_MODELS_ENDPOINT, headers=headers)
+        if resp.status_code == 200:
+            data = resp.json()
+            models = [m["id"] for m in data.get("data", [])]
+            return models
+        else:
+            st.error(f"Не удалось получить список моделей. Код: {resp.status_code}. Текст: {resp.text}")
+            return []
+    except Exception as e:
+        st.error(f"Ошибка при получении списка моделей: {e}")
+        return []
+
+def chat_completion_request(
+    api_key: str,
+    messages: list,
+    model: str,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    min_p: float,
+    top_k: int,
+    presence_penalty: float,
+    frequency_penalty: float,
+    repetition_penalty: float
+):
+    """Функция для синхронного (не-стримингового) chat-комплишена с retries на 429."""
+    payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "top_p": top_p,
+        "top_k": top_k,
+        "presence_penalty": presence_penalty,
+        "frequency_penalty": frequency_penalty,
+        "repetition_penalty": repetition_penalty,
+        "min_p": min_p
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
+
+    attempts = 0
+    while attempts < MAX_RETRIES:
+        attempts += 1
         try:
-            result = function(*args, task_id=task_id, **kwargs)
-            tasks = server_state.get('tasks')
-            tasks[task_id]['status'] = 'completed'
-            tasks[task_id]['result'] = result
-            tasks[task_id]['end_time'] = time.time()
-            server_state.set('tasks', tasks)
-        except Exception as e:
-            tasks = server_state.get('tasks')
-            tasks[task_id]['status'] = 'failed'
-            tasks[task_id]['result'] = str(e)
-            tasks[task_id]['end_time'] = time.time()
-            server_state.set('tasks', tasks)
-    
-    executor.submit(task_wrapper, task_id, *args, **kwargs)
-    st.session_state.current_task_id = task_id
-    
-    return task_id
-
-# Пример функции обработки (замените на вашу реальную функцию)
-def example_long_task(task_id, duration=10):
-    for i in range(duration):
-        time.sleep(1)  # Симуляция длительной задачи
-        tasks = server_state.get('tasks')
-        if task_id in tasks:
-            tasks[task_id]['progress'] = (i + 1) / duration
-            server_state.set('tasks', tasks)
-    return "Задача завершена успешно!"
-
-# Основной интерфейс Streamlit
-st.title("Пример использования streamlit-server-state и streamlit-autorefresh")
-
-# Кнопка для запуска задачи
-if st.button("Запустить долгую задачу"):
-    task_id = submit_task(example_long_task, duration=10)
-    st.success(f"✅ Задача запущена! Ваш Task ID: {task_id}")
-    st.info("Сохраните этот ID, чтобы отслеживать прогресс.")
-
-# Интерфейс для отслеживания задач
-st.sidebar.header("📈 Отслеживание задач")
-
-with st.sidebar.expander("🔍 Проверить статус задачи"):
-    input_task_id = st.text_input("Введите Task ID", key="input_task_id")
-    if st.button("Проверить статус", key="check_status"):
-        if not input_task_id:
-            st.error("❌ Task ID не может быть пустым!")
-        else:
-            tasks = server_state.get('tasks')
-            task = tasks.get(input_task_id)
-            if task:
-                status = task['status']
-                progress = task['progress']
-                result = task['result']
-                start_time = task['start_time']
-                end_time = task['end_time']
-
-                st.write(f"**Task ID:** {input_task_id}")
-                st.write(f"**Статус:** {status}")
-                st.progress(progress)
-                st.write(f"**Начало:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}")
-                if end_time:
-                    st.write(f"**Завершение:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_time))}")
-                else:
-                    st.write("**Завершение:** В процессе")
-
-                if status == 'completed':
-                    st.write(f"**Результат:** {result}")
-                elif status == 'failed':
-                    st.error(f"**Ошибка:** {result}")
+            resp = requests.post(CHAT_COMPLETIONS_ENDPOINT, headers=headers, data=json.dumps(payload))
+            if resp.status_code == 200:
+                data = resp.json()
+                return data["choices"][0]["message"].get("content", "")
+            elif resp.status_code == 429:
+                # rate limit exceeded, ждем 2 сек
+                time.sleep(2)
+                # и попробуем снова
+                continue
             else:
-                st.error("❌ Задача с таким ID не найдена.")
+                return f"Ошибка: {resp.status_code} - {resp.text}"
+        except Exception as e:
+            return f"Исключение: {e}"
+    # Если все попытки исчерпаны
+    return "Ошибка: Превышено число попыток при 429 RATE_LIMIT."
 
-# Автоматическое обновление статуса текущей задачи
-if 'current_task_id' not in st.session_state:
-    st.session_state.current_task_id = None
+def process_single_row(
+    api_key: str,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    row_text: str,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    min_p: float,
+    top_k: int,
+    presence_penalty: float,
+    frequency_penalty: float,
+    repetition_penalty: float
+):
+    """Функция-обёртка для параллельного вызова."""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"{user_prompt}\n{row_text}"}
+    ]
+    raw_response = chat_completion_request(
+        api_key,
+        messages,
+        model,
+        max_tokens,
+        temperature,
+        top_p,
+        min_p,
+        top_k,
+        presence_penalty,
+        frequency_penalty,
+        repetition_penalty
+    )
 
-if st.session_state.current_task_id:
-    tasks = server_state.get('tasks')
-    task = tasks.get(st.session_state.current_task_id)
-    if task:
-        status = task['status']
-        progress = task['progress']
-        result = task['result']
-        start_time = task['start_time']
-        end_time = task['end_time']
+    # Постобработка: убираем banned words и двойные кавычки
+    final_response = custom_postprocess_text(raw_response)
+    return final_response
 
-        st.write(f"**Текущая задача:** {st.session_state.current_task_id}")
-        st.write(f"**Статус:** {status}")
-        st.progress(progress)
-        st.write(f"**Начало:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}")
-        if end_time:
-            st.write(f"**Завершение:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_time))}")
-        else:
-            st.write("**Завершение:** В процессе")
-
-        if status == 'completed':
-            st.write(f"**Результат:** {result}")
-            st.session_state.current_task_id = None  # Сброс после завершения
-            st.success("✅ Задача завершена!")
-        elif status == 'failed':
-            st.error(f"**Ошибка:** {result}")
-            st.session_state.current_task_id = None  # Сброс после ошибки
-        else:
-            # Автообновление каждые 5 секунд
-            st_autorefresh(interval=5000, key="progress_refresh_current_task")
-
-# Функция обработки файла
 def process_file(
+    task_id: str,
     api_key: str,
     model: str,
     system_prompt: str,
     user_prompt: str,
     df: pd.DataFrame,
-    title_col: str,
+    title_col: str,  # Название колонки, которую надо переписать
     response_format: str,
     max_tokens: int,
     temperature: float,
@@ -156,25 +170,37 @@ def process_file(
     presence_penalty: float,
     frequency_penalty: float,
     repetition_penalty: float,
-    chunk_size: int = 10,
-    max_workers: int = 5,
-    task_id: str = None
+    chunk_size: int = 10,  # фиксируем 10 строк в чанке
+    max_workers: int = 5  # Количество потоков
 ):
-    total_rows = len(df)
+    """Параллельно обрабатываем загруженный файл построчно (или чанками)."""
+
+    tasks = server_state.get('tasks')
+    progress = 0.0
+    tasks[task_id]['progress'] = progress
+    server_state.set('tasks', tasks)
+
     results = []
-    
+    total_rows = len(df)
+
+    start_time = time.time()
+    lines_processed = 0
+
     for start_idx in range(0, total_rows, chunk_size):
+        chunk_start_time = time.time()
         end_idx = min(start_idx + chunk_size, total_rows)
+
+        # Берём индексы строк в этом чанке
         chunk_indices = list(df.index[start_idx:end_idx])
         chunk_size_actual = len(chunk_indices)
         chunk_results = [None] * chunk_size_actual
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor_inner:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_i = {}
             for i, row_idx in enumerate(chunk_indices):
                 row_text = str(df.loc[row_idx, title_col])
-                future = executor_inner.submit(
-                    process_single_row,  # Ваша функция обработки строки
+                future = executor.submit(
+                    process_single_row,
                     api_key,
                     model,
                     system_prompt,
@@ -195,23 +221,116 @@ def process_file(
                 i = future_to_i[future]
                 chunk_results[i] = future.result()
 
+        # Расширяем общий список результатов
         results.extend(chunk_results)
-        progress = len(results) / total_rows
-        server_state.tasks[task_id]['progress'] = progress
 
+        lines_processed += chunk_size_actual
+        progress = lines_processed / total_rows
+        tasks[task_id]['progress'] = progress
+        server_state.set('tasks', tasks)
+
+        time_for_chunk = time.time() - chunk_start_time
+        if chunk_size_actual > 0:
+            time_per_line = time_for_chunk / chunk_size_actual
+            lines_left = total_rows - lines_processed
+            if time_per_line > 0:
+                est_time_left_sec = lines_left * time_per_line
+                if est_time_left_sec < 60:
+                    time_text = f"~{est_time_left_sec:.1f} сек."
+                else:
+                    est_time_left_min = est_time_left_sec / 60.0
+                    time_text = f"~{est_time_left_min:.1f} мин."
+                tasks[task_id]['estimated_time_left'] = time_text
+                server_state.set('tasks', tasks)
+
+    # Создаем копию df с новым столбцом
     df_out = df.copy()
     df_out["rewrite"] = results
 
-    return "Файл успешно обработан."
+    elapsed = time.time() - start_time
+    tasks[task_id]['status'] = 'completed'
+    tasks[task_id]['end_time'] = time.time()
+    server_state.set('tasks', tasks)
 
-# Функция обработки перевода файла
+    return df_out
+
+# ======= Новые функции для перевода =======
+
+def translate_completion_request(
+    api_key: str,
+    messages: list,
+    model: str,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    min_p: float,
+    top_k: int,
+    presence_penalty: float,
+    frequency_penalty: float,
+    repetition_penalty: float
+):
+    """Функция для перевода текста с retries на 429."""
+    raw_response = chat_completion_request(
+        api_key,
+        messages,
+        model,
+        max_tokens,
+        temperature,
+        top_p,
+        min_p,
+        top_k,
+        presence_penalty,
+        frequency_penalty,
+        repetition_penalty
+    )
+
+    # Постобработка: убираем banned words и двойные кавычки
+    final_response = custom_postprocess_text(raw_response)
+    return final_response
+
+def process_translation_single_row(
+    api_key: str,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    row_text: str,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    min_p: float,
+    top_k: int,
+    presence_penalty: float,
+    frequency_penalty: float,
+    repetition_penalty: float
+):
+    """Функция-обёртка для параллельного вызова перевода."""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"{user_prompt}\n{row_text}"}
+    ]
+    translated_text = translate_completion_request(
+        api_key=api_key,
+        messages=messages,
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        min_p=min_p,
+        top_k=top_k,
+        presence_penalty=presence_penalty,
+        frequency_penalty=frequency_penalty,
+        repetition_penalty=repetition_penalty
+    )
+    return translated_text
+
 def process_translation_file(
+    task_id: str,
     api_key: str,
     model: str,
     system_prompt: str,
     user_prompt: str,
     df: pd.DataFrame,
-    title_col: str,
+    title_col: str,  # Название колонки, которую надо перевести
     max_tokens: int,
     temperature: float,
     top_p: float,
@@ -220,25 +339,37 @@ def process_translation_file(
     presence_penalty: float,
     frequency_penalty: float,
     repetition_penalty: float,
-    chunk_size: int = 10,
-    max_workers: int = 5,
-    task_id: str = None
+    chunk_size: int = 10,  # фиксируем 10 строк в чанке
+    max_workers: int = 5  # Количество потоков
 ):
-    total_rows = len(df)
+    """Параллельно переводим загруженный файл построчно (или чанками)."""
+
+    tasks = server_state.get('tasks')
+    progress = 0.0
+    tasks[task_id]['progress'] = progress
+    server_state.set('tasks', tasks)
+
     results = []
-    
+    total_rows = len(df)
+
+    start_time = time.time()
+    lines_processed = 0
+
     for start_idx in range(0, total_rows, chunk_size):
+        chunk_start_time = time.time()
         end_idx = min(start_idx + chunk_size, total_rows)
+
+        # Берём индексы строк в этом чанке
         chunk_indices = list(df.index[start_idx:end_idx])
         chunk_size_actual = len(chunk_indices)
         chunk_results = [None] * chunk_size_actual
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor_inner:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_i = {}
             for i, row_idx in enumerate(chunk_indices):
                 row_text = str(df.loc[row_idx, title_col])
-                future = executor_inner.submit(
-                    process_translation_single_row,  # Ваша функция перевода строки
+                future = executor.submit(
+                    process_translation_single_row,
                     api_key,
                     model,
                     system_prompt,
@@ -259,57 +390,110 @@ def process_translation_file(
                 i = future_to_i[future]
                 chunk_results[i] = future.result()
 
+        # Расширяем общий список результатов
         results.extend(chunk_results)
-        progress = len(results) / total_rows
-        server_state.tasks[task_id]['progress'] = progress
 
+        lines_processed += chunk_size_actual
+        progress = lines_processed / total_rows
+        tasks[task_id]['progress'] = progress
+        server_state.set('tasks', tasks)
+
+        time_for_chunk = time.time() - chunk_start_time
+        if chunk_size_actual > 0:
+            time_per_line = time_for_chunk / chunk_size_actual
+            lines_left = total_rows - lines_processed
+            if time_per_line > 0:
+                est_time_left_sec = lines_left * time_per_line
+                if est_time_left_sec < 60:
+                    time_text = f"~{est_time_left_sec:.1f} сек."
+                else:
+                    est_time_left_min = est_time_left_sec / 60.0
+                    time_text = f"~{est_time_left_min:.1f} мин."
+                tasks[task_id]['estimated_time_left'] = time_text
+                server_state.set('tasks', tasks)
+
+    # Создаем копию df с новым столбцом
     df_out = df.copy()
     df_out["translated_title"] = results
 
-    return "Перевод завершен."
+    elapsed = time.time() - start_time
+    tasks[task_id]['status'] = 'completed'
+    tasks[task_id]['end_time'] = time.time()
+    server_state.set('tasks', tasks)
 
-# Основной интерфейс Streamlit
+    return df_out
+
+#######################################
+# 3) ПРЕСЕТЫ МОДЕЛЕЙ
+#######################################
+
+PRESETS = {
+    "Default": {
+        "system_prompt": "Act like you are a helpful assistant.",
+        "max_tokens": 512,
+        "temperature": 0.70,
+        "top_p": 1.0,
+        "min_p": 0.0,
+        "top_k": 40,
+        "presence_penalty": 0.0,
+        "frequency_penalty": 0.0,
+        "repetition_penalty": 1.0
+    },
+    "NSFW": {
+        "system_prompt": "You are an advanced NSFW content rewriter and evaluator. Generate one vivid and explicit title based on the input, ensuring it stays within 90 characters. The title should align with NSFW standards, SEO relevance, and native fluency.",
+        "max_tokens": 32000,
+        "temperature": 0.70,
+        "top_p": 1.0,
+        "min_p": 0.0,
+        "top_k": 40,
+        "presence_penalty": 0.20,
+        "frequency_penalty": 0.40,
+        "repetition_penalty": 1.22
+    },
+    "Adult_Content_Generator": {
+        "system_prompt": "You are a professional content creator specializing in adult NSFW content. Generate creative and engaging content based on the input provided.",
+        "max_tokens": 2500,
+        "temperature": 0.85,
+        "top_p": 0.95,
+        "min_p": 0.0,
+        "top_k": 50,
+        "presence_penalty": 0.30,
+        "frequency_penalty": 0.50,
+        "repetition_penalty": 1.50
+    },
+    "Erotic_Story_Teller": {
+        "system_prompt": "You are an expert in writing erotic stories. Generate a captivating and tasteful story based on the input provided.",
+        "max_tokens": 5000,
+        "temperature": 0.75,
+        "top_p": 0.90,
+        "min_p": 0.0,
+        "top_k": 60,
+        "presence_penalty": 0.25,
+        "frequency_penalty": 0.35,
+        "repetition_penalty": 1.30
+    }
+    # Можно добавить больше пресетов по необходимости
+}
+
+#######################################
+# 4) ИНТЕРФЕЙС
+#######################################
+
+# Инициализация хранилища задач
+if not server_state.get('tasks'):
+    server_state.set('tasks', {})
+
+# Создаем пул потоков для выполнения задач
+executor_main = concurrent.futures.ThreadPoolExecutor(max_workers=5)
+
 st.title("🧠 Novita AI Batch Processor")
 
 # Поле ввода API Key, доступное во всех вкладках
 st.sidebar.header("🔑 Настройки API")
-api_key = st.sidebar.text_input("API Key", value=st.secrets.get("novita_api_key", ""), type="password")
+api_key = st.sidebar.text_input("API Key", value=DEFAULT_API_KEY, type="password")
 
-# Боковая панель: Отслеживание задач
-st.sidebar.header("📈 Отслеживание задач")
-
-with st.sidebar.expander("🔍 Проверить статус задачи"):
-    input_task_id = st.text_input("Введите Task ID", key="input_task_id")
-    if st.button("Проверить статус", key="check_status"):
-        if not input_task_id:
-            st.error("❌ Task ID не может быть пустым!")
-        else:
-            task = server_state.tasks.get(input_task_id)
-            if task:
-                status = task['status']
-                progress = task['progress']
-                result = task['result']
-                start_time = task['start_time']
-                end_time = task['end_time']
-    
-                st.write(f"**Task ID:** {input_task_id}")
-                st.write(f"**Статус:** {status}")
-                st.progress(progress)
-                st.write(f"**Начало:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}")
-                if end_time:
-                    st.write(f"**Завершение:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_time))}")
-                else:
-                    st.write("**Завершение:** В процессе")
-    
-                if status == 'completed':
-                    st.write(f"**Результат:** {result}")
-                elif status == 'failed':
-                    st.error(f"**Ошибка:** {result}")
-            else:
-                st.error("❌ Задача с таким ID не найдена.")
-
-# Вкладки приложения
-tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста"])
+# Создаем вкладки для разделения функционала
+tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста", "📊 Отслеживание задач"])
 
 ########################################
 # Вкладка 1: Обработка текста
@@ -363,16 +547,34 @@ with tabs[0]:
         if st.button("🔄 Обновить список моделей (Обработка текста)", key="refresh_models_text"):
             if not api_key:
                 st.error("❌ Ключ API пуст")
-                server_state.tasks['model_list_text'] = []
+                server_state.set('tasks', server_state.get('tasks'))  # Обновление состояния
             else:
                 model_list_text = get_model_list(api_key)
-                server_state.tasks['model_list_text'] = model_list_text
+                server_state.get('tasks')[uuid.uuid4().hex] = {
+                    'status': 'models_loaded',
+                    'progress': 1.0,
+                    'result': model_list_text,
+                    'start_time': time.time(),
+                    'end_time': time.time()
+                }
+                server_state.set('tasks', server_state.get('tasks'))
 
-        if 'model_list_text' not in server_state.tasks:
-            server_state.tasks['model_list_text'] = []
+        if "model_list_text" not in st.session_state:
+            st.session_state["model_list_text"] = []
 
-        if len(server_state.tasks['model_list_text']) > 0:
-            selected_model_text = st.selectbox("✅ Выберите модель для обработки текста", server_state.tasks['model_list_text'], key="select_model_text")
+        # Автоматическое обновление списка моделей через autorefresh
+        st_autorefresh(interval=2000, limit=100, key="autorefresh_models_text")
+
+        # Получаем список моделей из server_state
+        tasks = server_state.get('tasks')
+        model_list_text = []
+        for task_id, task in tasks.items():
+            if task.get('status') == 'models_loaded':
+                model_list_text = task.get('result', [])
+                break
+
+        if len(model_list_text) > 0:
+            selected_model_text = st.selectbox("✅ Выберите модель для обработки текста", model_list_text, key="select_model_text")
         else:
             selected_model_text = st.selectbox(
                 "✅ Выберите модель для обработки текста",
@@ -477,7 +679,7 @@ with tabs[0]:
                 df_text = pd.DataFrame(parsed_lines, columns=columns)
 
             st.write("### 📋 Предпросмотр файла")
-            num_preview = st.number_input("🔍 Количество строк для предпросмотра", min_value=1, max_value=100, value=10)
+            num_preview = st.number_input("🔍 Количество строк для предпросмотра", min_value=1, max_value=100, value=10, key="num_preview_text")
             st.dataframe(df_text.head(num_preview))
         except Exception as e:
             st.error(f"❌ Ошибка при чтении файла: {e}")
@@ -500,34 +702,53 @@ with tabs[0]:
                     st.warning(f"⚠️ Файл содержит {row_count} строк. Это превышает рекомендованный лимит в 100000.")
                 st.info("🔄 Начинаем обработку, пожалуйста подождите...")
 
-                # Отправка задачи в фоновый режим
-                task_id = submit_task(
+                # Создаем уникальный ID для задачи
+                task_id = uuid.uuid4().hex
+
+                # Инициализируем задачу в server_state
+                tasks = server_state.get('tasks')
+                tasks[task_id] = {
+                    'status': 'queued',
+                    'progress': 0.0,
+                    'result': None,
+                    'start_time': None,
+                    'end_time': None,
+                    'type': 'processing_text'
+                }
+                server_state.set('tasks', tasks)
+
+                # Отправляем задачу в пул потоков
+                executor_main.submit(
                     process_file,
-                    api_key=api_key,
-                    model=selected_model_text,
-                    system_prompt=system_prompt_text,
-                    user_prompt=user_prompt_text,
-                    df=df_text,
-                    title_col=title_col_text,
-                    response_format="csv",
-                    max_tokens=max_tokens_text,
-                    temperature=temperature_text,
-                    top_p=top_p_text,
-                    min_p=min_p_text,
-                    top_k=top_k_text,
-                    presence_penalty=presence_penalty_text,
-                    frequency_penalty=frequency_penalty_text,
-                    repetition_penalty=repetition_penalty_text,
+                    task_id,
+                    api_key,
+                    selected_model_text,
+                    system_prompt_text,
+                    user_prompt_text,
+                    df_text,
+                    title_col_text,
+                    "csv",  # response_format, можно использовать при необходимости
+                    max_tokens_text,
+                    temperature_text,
+                    top_p_text,
+                    min_p_text,
+                    top_k_text,
+                    presence_penalty_text,
+                    frequency_penalty_text,
+                    repetition_penalty_text,
                     chunk_size=10,
                     max_workers=max_workers_text
                 )
 
-                st.success(f"✅ Обработка начата! Ваш Task ID: {task_id}")
+                st.success(f"✅ Задача запущена! Ваш Task ID: {task_id}")
                 st.info("Сохраните этот ID, чтобы отслеживать прогресс.")
 
-    ########################################
-    # Вкладка 2: Перевод текста
-    ########################################
+    # Разделительная линия
+    st.markdown("---")
+
+########################################
+# Вкладка 2: Перевод текста
+########################################
 with tabs[1]:
     st.header("🌐 Перевод текста")
 
@@ -577,16 +798,35 @@ with tabs[1]:
         if st.button("🔄 Обновить список моделей (Перевод текста)", key="refresh_models_translate"):
             if not api_key:
                 st.error("❌ Ключ API пуст")
-                server_state.tasks['model_list_translate'] = []
+                server_state.set('tasks', server_state.get('tasks'))  # Обновление состояния
             else:
                 model_list_translate = get_model_list(api_key)
-                server_state.tasks['model_list_translate'] = model_list_translate
+                server_state.get('tasks')[uuid.uuid4().hex] = {
+                    'status': 'models_loaded_translate',
+                    'progress': 1.0,
+                    'result': model_list_translate,
+                    'start_time': time.time(),
+                    'end_time': time.time(),
+                    'type': 'models_translation'
+                }
+                server_state.set('tasks', server_state.get('tasks'))
 
-        if 'model_list_translate' not in server_state.tasks:
-            server_state.tasks['model_list_translate'] = []
+        if "model_list_translate" not in st.session_state:
+            st.session_state["model_list_translate"] = []
 
-        if len(server_state.tasks['model_list_translate']) > 0:
-            selected_model_translate = st.selectbox("✅ Выберите модель для перевода текста", server_state.tasks['model_list_translate'], key="select_model_translate")
+        # Автоматическое обновление списка моделей через autorefresh
+        st_autorefresh(interval=2000, limit=100, key="autorefresh_models_translate")
+
+        # Получаем список моделей из server_state
+        tasks = server_state.get('tasks')
+        model_list_translate = []
+        for task_id, task in tasks.items():
+            if task.get('status') == 'models_loaded_translate':
+                model_list_translate = task.get('result', [])
+                break
+
+        if len(model_list_translate) > 0:
+            selected_model_translate = st.selectbox("✅ Выберите модель для перевода текста", model_list_translate, key="select_model_translate")
         else:
             selected_model_translate = st.selectbox(
                 "✅ Выберите модель для перевода текста",
@@ -692,63 +932,93 @@ with tabs[1]:
                     st.warning(f"⚠️ Файл содержит {row_count_translate} строк. Это превышает рекомендованный лимит в 100000.")
                 st.info("🔄 Начинаем перевод, пожалуйста подождите...")
 
+                # Создаем уникальный ID для задачи
+                task_id = uuid.uuid4().hex
+
+                # Инициализируем задачу в server_state
+                tasks = server_state.get('tasks')
+                tasks[task_id] = {
+                    'status': 'queued',
+                    'progress': 0.0,
+                    'result': None,
+                    'start_time': None,
+                    'end_time': None,
+                    'type': 'translation'
+                }
+                server_state.set('tasks', tasks)
+
                 # Пользовательский промпт для перевода
                 user_prompt_translate = f"Translate the following text from {source_language} to {target_language}:"
 
-                # Отправка задачи перевода в фоновый режим
-                task_id_translate = submit_task(
+                # Отправляем задачу в пул потоков
+                executor_main.submit(
                     process_translation_file,
-                    api_key=api_key,
-                    model=selected_model_translate,
-                    system_prompt=system_prompt_translate,
-                    user_prompt=user_prompt_translate,
-                    df=df_translate,
-                    title_col=title_col_translate,
-                    max_tokens=max_tokens_translate,
-                    temperature=temperature_translate,
-                    top_p=top_p_translate,
-                    min_p=min_p_translate,
-                    top_k=top_k_translate,
-                    presence_penalty=presence_penalty_translate,
-                    frequency_penalty=frequency_penalty_translate,
-                    repetition_penalty=repetition_penalty_translate,
+                    task_id,
+                    api_key,
+                    selected_model_translate,
+                    system_prompt_translate,
+                    user_prompt_translate,
+                    df_translate,
+                    title_col_translate,
+                    max_tokens_translate,
+                    temperature_translate,
+                    top_p_translate,
+                    min_p_translate,
+                    top_k_translate,
+                    presence_penalty_translate,
+                    frequency_penalty_translate,
+                    repetition_penalty_translate,
                     chunk_size=10,
                     max_workers=max_workers_translate
                 )
 
-                st.success(f"✅ Перевод начат! Ваш Task ID: {task_id_translate}")
+                st.success(f"✅ Задача запущена! Ваш Task ID: {task_id}")
                 st.info("Сохраните этот ID, чтобы отслеживать прогресс.")
 
-# Отображение текущего статуса задачи
-if 'current_task_id' not in st.session_state:
-    st.session_state.current_task_id = None
+    # Разделительная линия
+    st.markdown("---")
 
-if st.session_state.current_task_id:
-    task = server_state.tasks.get(st.session_state.current_task_id)
-    if task:
-        status = task['status']
-        progress = task['progress']
-        result = task['result']
-        start_time = task['start_time']
-        end_time = task['end_time']
+########################################
+# Вкладка 3: Отслеживание задач
+########################################
+with tabs[2]:
+    st.header("📊 Отслеживание задач")
 
-        st.write(f"**Текущая задача:** {st.session_state.current_task_id}")
-        st.write(f"**Статус:** {status}")
-        st.progress(progress)
-        st.write(f"**Начало:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}")
-        if end_time:
-            st.write(f"**Завершение:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_time))}")
-        else:
-            st.write("**Завершение:** В процессе")
+    tasks = server_state.get('tasks')
 
-        if status == 'completed':
-            st.write(f"**Результат:** {result}")
-            st.session_state.current_task_id = None  # Сброс после завершения
-            st.success("✅ Задача завершена!")
-        elif status == 'failed':
-            st.error(f"**Ошибка:** {result}")
-            st.session_state.current_task_id = None  # Сброс после ошибки
-        else:
-            # Автообновление каждые 5 секунд
-            st_autorefresh(interval=5000, key="progress_refresh_current_task")
+    if not tasks:
+        st.info("Нет активных задач.")
+    else:
+        task_ids = list(tasks.keys())
+        selected_task_id = st.selectbox("🆔 Выберите Task ID для просмотра", task_ids, key="selected_task_id_tracking")
+
+        if selected_task_id:
+            task = tasks[selected_task_id]
+            st.write(f"**Task ID:** {selected_task_id}")
+            st.write(f"**Тип задачи:** {task.get('type')}")
+            st.write(f"**Статус:** {task.get('status')}")
+            progress = task.get('progress', 0.0)
+            st.progress(progress)
+
+            if task.get('start_time'):
+                st.write(f"**Начало:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(task['start_time']))}")
+            if task.get('end_time'):
+                st.write(f"**Завершение:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(task['end_time']))}")
+            else:
+                est_time_left = task.get('estimated_time_left', 'Неизвестно')
+                st.write(f"**Примерное оставшееся время:** {est_time_left}")
+
+            if task.get('status') == 'completed':
+                if task.get('type') == 'processing_text':
+                    st.write("**Результат:** Обработка текста завершена.")
+                    # Предложить скачать результат, если нужно
+                    # Здесь можно добавить ссылку на файл или другие действия
+                elif task.get('type') == 'translation':
+                    st.write("**Результат:** Перевод завершен.")
+                    # Предложить скачать результат, если нужно
+            elif task.get('status') == 'failed':
+                st.error(f"**Ошибка:** {task.get('result')}")
+
+    # Автоматическое обновление страницы для обновления статуса задач
+    st_autorefresh(interval=5000, limit=100, key="autorefresh_tasks_tracking")
 
