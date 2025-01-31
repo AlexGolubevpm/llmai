@@ -173,10 +173,10 @@ def process_file(
 ):
     """Параллельно обрабатываем загруженный файл построчно (или чанками)."""
 
-    tasks = server_state.get('tasks')
+    tasks = server_state['tasks']
     tasks[task_id]['status'] = 'running'
     tasks[task_id]['start_time'] = time.time()
-    server_state.set('tasks', tasks)
+    server_state['tasks'] = tasks
 
     results = []
     total_rows = len(df)
@@ -225,7 +225,7 @@ def process_file(
         lines_processed += chunk_size_actual
         progress = lines_processed / total_rows
         tasks[task_id]['progress'] = progress
-        server_state.set('tasks', tasks)
+        server_state['tasks'] = tasks
 
         time_for_chunk = time.time() - chunk_start_time
         if chunk_size_actual > 0:
@@ -239,7 +239,7 @@ def process_file(
                     est_time_left_min = est_time_left_sec / 60.0
                     time_text = f"~{est_time_left_min:.1f} мин."
                 tasks[task_id]['estimated_time_left'] = time_text
-                server_state.set('tasks', tasks)
+                server_state['tasks'] = tasks
 
     # Создаем копию df с новым столбцом
     df_out = df.copy()
@@ -248,7 +248,7 @@ def process_file(
     elapsed = time.time() - start_time
     tasks[task_id]['status'] = 'completed'
     tasks[task_id]['end_time'] = time.time()
-    server_state.set('tasks', tasks)
+    server_state['tasks'] = tasks
 
     return df_out
 
@@ -342,10 +342,10 @@ def process_translation_file(
 ):
     """Параллельно переводим загруженный файл построчно (или чанками)."""
 
-    tasks = server_state.get('tasks')
+    tasks = server_state['tasks']
     tasks[task_id]['status'] = 'running'
     tasks[task_id]['start_time'] = time.time()
-    server_state.set('tasks', tasks)
+    server_state['tasks'] = tasks
 
     results = []
     total_rows = len(df)
@@ -394,7 +394,7 @@ def process_translation_file(
         lines_processed += chunk_size_actual
         progress = lines_processed / total_rows
         tasks[task_id]['progress'] = progress
-        server_state.set('tasks', tasks)
+        server_state['tasks'] = tasks
 
         time_for_chunk = time.time() - chunk_start_time
         if chunk_size_actual > 0:
@@ -408,7 +408,7 @@ def process_translation_file(
                     est_time_left_min = est_time_left_sec / 60.0
                     time_text = f"~{est_time_left_min:.1f} мин."
                 tasks[task_id]['estimated_time_left'] = time_text
-                server_state.set('tasks', tasks)
+                server_state['tasks'] = tasks
 
     # Создаем копию df с новым столбцом
     df_out = df.copy()
@@ -417,7 +417,7 @@ def process_translation_file(
     elapsed = time.time() - start_time
     tasks[task_id]['status'] = 'completed'
     tasks[task_id]['end_time'] = time.time()
-    server_state.set('tasks', tasks)
+    server_state['tasks'] = tasks
 
     return df_out
 
@@ -478,8 +478,8 @@ PRESETS = {
 #######################################
 
 # Инициализация хранилища задач
-if not server_state.get('tasks'):
-    server_state.set('tasks', {})
+if 'tasks' not in server_state:
+    server_state['tasks'] = {}
 
 # Создаем пул потоков для выполнения задач
 executor_main = concurrent.futures.ThreadPoolExecutor(max_workers=5)
@@ -548,8 +548,7 @@ with tabs[0]:
             else:
                 # Создаём задачу для загрузки моделей
                 task_id = uuid.uuid4().hex
-                tasks = server_state.get('tasks')
-                tasks[task_id] = {
+                server_state['tasks'][task_id] = {
                     'status': 'loading_models_text',
                     'progress': 0.0,
                     'result': None,
@@ -557,7 +556,7 @@ with tabs[0]:
                     'end_time': None,
                     'type': 'loading_models_text'
                 }
-                server_state.set('tasks', tasks)
+                server_state['tasks'] = server_state['tasks']
 
                 # Отправляем задачу в пул потоков
                 executor_main.submit(
@@ -573,9 +572,8 @@ with tabs[0]:
         st_autorefresh(interval=2000, limit=100, key="autorefresh_models_text")
 
         # Получаем список моделей из server_state
-        tasks = server_state.get('tasks')
         model_list_text = []
-        for task_id, task in tasks.items():
+        for task_id, task in server_state['tasks'].items():
             if task.get('status') == 'completed' and task.get('type') == 'loading_models_text':
                 model_list_text = task.get('result', [])
                 break
@@ -713,8 +711,7 @@ with tabs[0]:
                 task_id = uuid.uuid4().hex
 
                 # Инициализируем задачу в server_state
-                tasks = server_state.get('tasks')
-                tasks[task_id] = {
+                server_state['tasks'][task_id] = {
                     'status': 'queued',
                     'progress': 0.0,
                     'result': None,
@@ -722,7 +719,7 @@ with tabs[0]:
                     'end_time': None,
                     'type': 'processing_text'
                 }
-                server_state.set('tasks', tasks)
+                server_state['tasks'] = server_state['tasks']
 
                 # Отправляем задачу в пул потоков
                 executor_main.submit(
@@ -808,8 +805,7 @@ with tabs[1]:
             else:
                 # Создаём задачу для загрузки моделей
                 task_id = uuid.uuid4().hex
-                tasks = server_state.get('tasks')
-                tasks[task_id] = {
+                server_state['tasks'][task_id] = {
                     'status': 'loading_models_translate',
                     'progress': 0.0,
                     'result': None,
@@ -817,7 +813,7 @@ with tabs[1]:
                     'end_time': None,
                     'type': 'loading_models_translate'
                 }
-                server_state.set('tasks', tasks)
+                server_state['tasks'] = server_state['tasks']
 
                 # Отправляем задачу в пул потоков
                 executor_main.submit(
@@ -833,9 +829,8 @@ with tabs[1]:
         st_autorefresh(interval=2000, limit=100, key="autorefresh_models_translate")
 
         # Получаем список моделей из server_state
-        tasks = server_state.get('tasks')
         model_list_translate = []
-        for task_id, task in tasks.items():
+        for task_id, task in server_state['tasks'].items():
             if task.get('status') == 'completed' and task.get('type') == 'loading_models_translate':
                 model_list_translate = task.get('result', [])
                 break
@@ -951,8 +946,7 @@ with tabs[1]:
                 task_id = uuid.uuid4().hex
 
                 # Инициализируем задачу в server_state
-                tasks = server_state.get('tasks')
-                tasks[task_id] = {
+                server_state['tasks'][task_id] = {
                     'status': 'queued',
                     'progress': 0.0,
                     'result': None,
@@ -960,7 +954,7 @@ with tabs[1]:
                     'end_time': None,
                     'type': 'translation'
                 }
-                server_state.set('tasks', tasks)
+                server_state['tasks'] = server_state['tasks']
 
                 # Пользовательский промпт для перевода
                 user_prompt_translate = f"Translate the following text from {source_language} to {target_language}:"
@@ -999,7 +993,7 @@ with tabs[1]:
 with tabs[2]:
     st.header("📊 Отслеживание задач")
 
-    tasks = server_state.get('tasks')
+    tasks = server_state['tasks']
 
     if not tasks:
         st.info("Нет активных задач.")
@@ -1043,9 +1037,9 @@ with tabs[2]:
 
 def load_models_task(task_id: str, api_key: str):
     """Функция для загрузки списка моделей и обновления состояния задачи."""
-    tasks = server_state.get('tasks')
+    tasks = server_state['tasks']
     tasks[task_id]['status'] = 'running'
-    server_state.set('tasks', tasks)
+    server_state['tasks'] = tasks
 
     models = get_model_list(api_key)
 
@@ -1057,13 +1051,13 @@ def load_models_task(task_id: str, api_key: str):
         tasks[task_id]['result'] = models  # Здесь models содержит сообщение об ошибке
 
     tasks[task_id]['end_time'] = time.time()
-    server_state.set('tasks', tasks)
+    server_state['tasks'] = tasks
 
 def load_models_translate_task(task_id: str, api_key: str):
     """Функция для загрузки списка моделей для перевода и обновления состояния задачи."""
-    tasks = server_state.get('tasks')
+    tasks = server_state['tasks']
     tasks[task_id]['status'] = 'running'
-    server_state.set('tasks', tasks)
+    server_state['tasks'] = tasks
 
     models = get_model_list(api_key)
 
@@ -1075,5 +1069,5 @@ def load_models_translate_task(task_id: str, api_key: str):
         tasks[task_id]['result'] = models  # Здесь models содержит сообщение об ошибке
 
     tasks[task_id]['end_time'] = time.time()
-    server_state.set('tasks', tasks)
+    server_state['tasks'] = tasks
 
