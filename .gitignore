@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Streamlit secrets
+secrets.toml
+
+# Virtual environment
+venv/
+.env/
+
+# Data directory
+/data/
+
+# Logs
+*.log
