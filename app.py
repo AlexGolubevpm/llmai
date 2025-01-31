@@ -57,11 +57,9 @@ def get_model_list(api_key: str):
             models = [m["id"] for m in data.get("data", [])]
             return models
         else:
-            st.error(f"Не удалось получить список моделей. Код: {resp.status_code}. Текст: {resp.text}")
-            return []
+            return f"Не удалось получить список моделей. Код: {resp.status_code}. Текст: {resp.text}"
     except Exception as e:
-        st.error(f"Ошибка при получении списка моделей: {e}")
-        return []
+        return f"Ошибка при получении списка моделей: {e}"
 
 def chat_completion_request(
     api_key: str,
