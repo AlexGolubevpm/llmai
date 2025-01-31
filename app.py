@@ -1,163 +1,58 @@
 import streamlit as st
-import streamlit.components.v1 as components
+import streamlit_server_state as server_state
+import concurrent.futures
+import uuid
+import time
+import pandas as pd
+import re
+from streamlit_autorefresh import st_autorefresh
+
+# Ваши импортированные модули и функции
 import requests
 import json
-import pandas as pd
-import time
-import concurrent.futures
-import re
 
-#######################################
-# 1) НАСТРОЙКИ ПРИЛОЖЕНИЯ
-#######################################
+# Инициализация хранилища задач
+if 'tasks' not in server_state:
+    server_state.tasks = {}
 
-# Базовый URL API Novita
-API_BASE_URL = "https://api.novita.ai/v3/openai"
-LIST_MODELS_ENDPOINT = f"{API_BASE_URL}/models"
-CHAT_COMPLETIONS_ENDPOINT = f"{API_BASE_URL}/chat/completions"
+# Инициализация пула потоков
+executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
 
-# Ключ по умолчанию (НЕБЕЗОПАСНО в реальном проде)
-DEFAULT_API_KEY = "sk_MyidbhnT9jXzw-YDymhijjY8NF15O0Qy7C36etNTAxE"
-
-# Максимальное количество повторных попыток при 429 (Rate Limit)
-MAX_RETRIES = 3
-
-st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
-
-#######################################
-# 2) ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-#######################################
-
-def custom_postprocess_text(text: str) -> str:
-    """
-    Убираем 'fucking' (в любом регистре) только в начале строки.
-    Также удаляем все двойные кавычки из текста.
-    """
-    # Удаляем 'fucking' в начале строки
-    pattern_start = re.compile(r'^(fucking\s*)', re.IGNORECASE)
-    text = pattern_start.sub('', text)
+# Функция для отправки задач в фоновый режим
+def submit_task(function, *args, **kwargs):
+    task_id = str(uuid.uuid4())
+    server_state.tasks[task_id] = {
+        'status': 'running',
+        'progress': 0.0,
+        'result': None,
+        'start_time': time.time(),
+        'end_time': None
+    }
     
-    # Удаляем все двойные кавычки
-    text = text.replace('"', '')
-    
-    return text
-
-def get_model_list(api_key: str):
-    """Загружаем список доступных моделей через эндпоинт Novita AI"""
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    try:
-        resp = requests.get(LIST_MODELS_ENDPOINT, headers=headers)
-        if resp.status_code == 200:
-            data = resp.json()
-            models = [m["id"] for m in data.get("data", [])]
-            return models
-        else:
-            st.error(f"Не удалось получить список моделей. Код: {resp.status_code}. Текст: {resp.text}")
-            return []
-    except Exception as e:
-        st.error(f"Ошибка при получении списка моделей: {e}")
-        return []
-
-def chat_completion_request(
-    api_key: str,
-    messages: list,
-    model: str,
-    max_tokens: int,
-    temperature: float,
-    top_p: float,
-    min_p: float,
-    top_k: int,
-    presence_penalty: float,
-    frequency_penalty: float,
-    repetition_penalty: float
-):
-    """Функция для синхронного (не-стримингового) chat-комплишена с retries на 429."""
-    payload = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "top_p": top_p,
-        "top_k": top_k,
-        "presence_penalty": presence_penalty,
-        "frequency_penalty": frequency_penalty,
-        "repetition_penalty": repetition_penalty,
-        "min_p": min_p
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
-
-    attempts = 0
-    while attempts < MAX_RETRIES:
-        attempts += 1
+    def task_wrapper(task_id, *args, **kwargs):
         try:
-            resp = requests.post(CHAT_COMPLETIONS_ENDPOINT, headers=headers, data=json.dumps(payload))
-            if resp.status_code == 200:
-                data = resp.json()
-                return data["choices"][0]["message"].get("content", "")
-            elif resp.status_code == 429:
-                # rate limit exceeded, ждем 2 сек
-                time.sleep(2)
-                # и попробуем снова
-                continue
-            else:
-                return f"Ошибка: {resp.status_code} - {resp.text}"
+            result = function(*args, task_id=task_id, **kwargs)
+            server_state.tasks[task_id]['status'] = 'completed'
+            server_state.tasks[task_id]['result'] = result
+            server_state.tasks[task_id]['end_time'] = time.time()
         except Exception as e:
-            return f"Исключение: {e}"
-    # Если все попытки исчерпаны
-    return "Ошибка: Превышено число попыток при 429 RATE_LIMIT."
+            server_state.tasks[task_id]['status'] = 'failed'
+            server_state.tasks[task_id]['result'] = str(e)
+            server_state.tasks[task_id]['end_time'] = time.time()
+    
+    executor.submit(task_wrapper, task_id, *args, **kwargs)
+    st.session_state.current_task_id = task_id
+    
+    return task_id
 
-def process_single_row(
-    api_key: str,
-    model: str,
-    system_prompt: str,
-    user_prompt: str,
-    row_text: str,
-    max_tokens: int,
-    temperature: float,
-    top_p: float,
-    min_p: float,
-    top_k: int,
-    presence_penalty: float,
-    frequency_penalty: float,
-    repetition_penalty: float
-):
-    """Функция-обёртка для параллельного вызова."""
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"{user_prompt}\n{row_text}"}
-    ]
-    raw_response = chat_completion_request(
-        api_key,
-        messages,
-        model,
-        max_tokens,
-        temperature,
-        top_p,
-        min_p,
-        top_k,
-        presence_penalty,
-        frequency_penalty,
-        repetition_penalty
-    )
-
-    # Постобработка: убираем banned words и двойные кавычки
-    final_response = custom_postprocess_text(raw_response)
-    return final_response
-
+# Функция обработки файла
 def process_file(
     api_key: str,
     model: str,
     system_prompt: str,
     user_prompt: str,
     df: pd.DataFrame,
-    title_col: str,  # Название колонки, которую надо переписать
+    title_col: str,
     response_format: str,
     max_tokens: int,
     temperature: float,
@@ -167,35 +62,25 @@ def process_file(
     presence_penalty: float,
     frequency_penalty: float,
     repetition_penalty: float,
-    chunk_size: int = 10,  # фиксируем 10 строк в чанке
-    max_workers: int = 5  # Количество потоков
+    chunk_size: int = 10,
+    max_workers: int = 5,
+    task_id: str = None
 ):
-    """Параллельно обрабатываем загруженный файл построчно (или чанками)."""
-
-    progress_bar = st.progress(0)
-    time_placeholder = st.empty()  # для отображения оставшегося времени
-
-    results = []
     total_rows = len(df)
-
-    start_time = time.time()
-    lines_processed = 0
-
+    results = []
+    
     for start_idx in range(0, total_rows, chunk_size):
-        chunk_start_time = time.time()
         end_idx = min(start_idx + chunk_size, total_rows)
-
-        # Берём индексы строк в этом чанке
         chunk_indices = list(df.index[start_idx:end_idx])
         chunk_size_actual = len(chunk_indices)
         chunk_results = [None] * chunk_size_actual
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor_inner:
             future_to_i = {}
             for i, row_idx in enumerate(chunk_indices):
                 row_text = str(df.loc[row_idx, title_col])
-                future = executor.submit(
-                    process_single_row,
+                future = executor_inner.submit(
+                    process_single_row,  # Ваша функция обработки строки
                     api_key,
                     model,
                     system_prompt,
@@ -216,110 +101,23 @@ def process_file(
                 i = future_to_i[future]
                 chunk_results[i] = future.result()
 
-        # Расширяем общий список результатов
         results.extend(chunk_results)
+        progress = len(results) / total_rows
+        server_state.tasks[task_id]['progress'] = progress
 
-        lines_processed += chunk_size_actual
-        progress_bar.progress(lines_processed / total_rows)
-
-        time_for_chunk = time.time() - chunk_start_time
-        if chunk_size_actual > 0:
-            time_per_line = time_for_chunk / chunk_size_actual
-            lines_left = total_rows - lines_processed
-            if time_per_line > 0:
-                est_time_left_sec = lines_left * time_per_line
-                if est_time_left_sec < 60:
-                    time_text = f"~{est_time_left_sec:.1f} сек."
-                else:
-                    est_time_left_min = est_time_left_sec / 60.0
-                    time_text = f"~{est_time_left_min:.1f} мин."
-                time_placeholder.info(f"Примерное оставшееся время: {time_text}")
-
-    # Создаем копию df с новым столбцом
     df_out = df.copy()
     df_out["rewrite"] = results
 
-    elapsed = time.time() - start_time
-    time_placeholder.success(f"Обработка завершена за {elapsed:.1f} секунд.")
+    return "Файл успешно обработан."
 
-    return df_out
-
-# ======= Новые функции для перевода =======
-
-def translate_completion_request(
-    api_key: str,
-    messages: list,
-    model: str,
-    max_tokens: int,
-    temperature: float,
-    top_p: float,
-    min_p: float,
-    top_k: int,
-    presence_penalty: float,
-    frequency_penalty: float,
-    repetition_penalty: float
-):
-    """Функция для перевода текста с retries на 429."""
-    raw_response = chat_completion_request(
-        api_key,
-        messages,
-        model,
-        max_tokens,
-        temperature,
-        top_p,
-        min_p,
-        top_k,
-        presence_penalty,
-        frequency_penalty,
-        repetition_penalty
-    )
-
-    # Постобработка: убираем banned words и двойные кавычки
-    final_response = custom_postprocess_text(raw_response)
-    return final_response
-
-def process_translation_single_row(
-    api_key: str,
-    model: str,
-    system_prompt: str,
-    user_prompt: str,
-    row_text: str,
-    max_tokens: int,
-    temperature: float,
-    top_p: float,
-    min_p: float,
-    top_k: int,
-    presence_penalty: float,
-    frequency_penalty: float,
-    repetition_penalty: float
-):
-    """Функция-обёртка для параллельного вызова перевода."""
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"{user_prompt}\n{row_text}"}
-    ]
-    translated_text = translate_completion_request(
-        api_key=api_key,
-        messages=messages,
-        model=model,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        top_p=top_p,
-        min_p=min_p,
-        top_k=top_k,
-        presence_penalty=presence_penalty,
-        frequency_penalty=frequency_penalty,
-        repetition_penalty=repetition_penalty
-    )
-    return translated_text
-
+# Функция обработки перевода файла
 def process_translation_file(
     api_key: str,
     model: str,
     system_prompt: str,
     user_prompt: str,
     df: pd.DataFrame,
-    title_col: str,  # Название колонки, которую надо перевести
+    title_col: str,
     max_tokens: int,
     temperature: float,
     top_p: float,
@@ -328,35 +126,25 @@ def process_translation_file(
     presence_penalty: float,
     frequency_penalty: float,
     repetition_penalty: float,
-    chunk_size: int = 10,  # фиксируем 10 строк в чанке
-    max_workers: int = 5  # Количество потоков
+    chunk_size: int = 10,
+    max_workers: int = 5,
+    task_id: str = None
 ):
-    """Параллельно переводим загруженный файл построчно (или чанками)."""
-
-    progress_bar = st.progress(0)
-    time_placeholder = st.empty()  # для отображения оставшегося времени
-
-    results = []
     total_rows = len(df)
-
-    start_time = time.time()
-    lines_processed = 0
-
+    results = []
+    
     for start_idx in range(0, total_rows, chunk_size):
-        chunk_start_time = time.time()
         end_idx = min(start_idx + chunk_size, total_rows)
-
-        # Берём индексы строк в этом чанке
         chunk_indices = list(df.index[start_idx:end_idx])
         chunk_size_actual = len(chunk_indices)
         chunk_results = [None] * chunk_size_actual
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor_inner:
             future_to_i = {}
             for i, row_idx in enumerate(chunk_indices):
                 row_text = str(df.loc[row_idx, title_col])
-                future = executor.submit(
-                    process_translation_single_row,
+                future = executor_inner.submit(
+                    process_translation_single_row,  # Ваша функция перевода строки
                     api_key,
                     model,
                     system_prompt,
@@ -377,97 +165,56 @@ def process_translation_file(
                 i = future_to_i[future]
                 chunk_results[i] = future.result()
 
-        # Расширяем общий список результатов
         results.extend(chunk_results)
+        progress = len(results) / total_rows
+        server_state.tasks[task_id]['progress'] = progress
 
-        lines_processed += chunk_size_actual
-        progress_bar.progress(lines_processed / total_rows)
-
-        time_for_chunk = time.time() - chunk_start_time
-        if chunk_size_actual > 0:
-            time_per_line = time_for_chunk / chunk_size_actual
-            lines_left = total_rows - lines_processed
-            if time_per_line > 0:
-                est_time_left_sec = lines_left * time_per_line
-                if est_time_left_sec < 60:
-                    time_text = f"~{est_time_left_sec:.1f} сек."
-                else:
-                    est_time_left_min = est_time_left_sec / 60.0
-                    time_text = f"~{est_time_left_min:.1f} мин."
-                time_placeholder.info(f"Примерное оставшееся время: {time_text}")
-
-    # Создаем копию df с новым столбцом
     df_out = df.copy()
     df_out["translated_title"] = results
 
-    elapsed = time.time() - start_time
-    time_placeholder.success(f"Перевод завершен за {elapsed:.1f} секунд.")
+    return "Перевод завершен."
 
-    return df_out
-
-#######################################
-# 3) ПРЕСЕТЫ МОДЕЛЕЙ
-#######################################
-
-PRESETS = {
-    "Default": {
-        "system_prompt": "Act like you are a helpful assistant.",
-        "max_tokens": 512,
-        "temperature": 0.70,
-        "top_p": 1.0,
-        "min_p": 0.0,
-        "top_k": 40,
-        "presence_penalty": 0.0,
-        "frequency_penalty": 0.0,
-        "repetition_penalty": 1.0
-    },
-    "NSFW": {
-        "system_prompt": "You are an advanced NSFW content rewriter and evaluator. Generate one vivid and explicit title based on the input, ensuring it stays within 90 characters. The title should align with NSFW standards, SEO relevance, and native fluency.",
-        "max_tokens": 32000,
-        "temperature": 0.70,
-        "top_p": 1.0,
-        "min_p": 0.0,
-        "top_k": 40,
-        "presence_penalty": 0.20,
-        "frequency_penalty": 0.40,
-        "repetition_penalty": 1.22
-    },
-    "Adult_Content_Generator": {
-        "system_prompt": "You are a professional content creator specializing in adult NSFW content. Generate creative and engaging content based on the input provided.",
-        "max_tokens": 2500,
-        "temperature": 0.85,
-        "top_p": 0.95,
-        "min_p": 0.0,
-        "top_k": 50,
-        "presence_penalty": 0.30,
-        "frequency_penalty": 0.50,
-        "repetition_penalty": 1.50
-    },
-    "Erotic_Story_Teller": {
-        "system_prompt": "You are an expert in writing erotic stories. Generate a captivating and tasteful story based on the input provided.",
-        "max_tokens": 5000,
-        "temperature": 0.75,
-        "top_p": 0.90,
-        "min_p": 0.0,
-        "top_k": 60,
-        "presence_penalty": 0.25,
-        "frequency_penalty": 0.35,
-        "repetition_penalty": 1.30
-    }
-    # Можно добавить больше пресетов по необходимости
-}
-
-#######################################
-# 4) ИНТЕРФЕЙС
-#######################################
-
+# Основной интерфейс Streamlit
 st.title("🧠 Novita AI Batch Processor")
 
 # Поле ввода API Key, доступное во всех вкладках
 st.sidebar.header("🔑 Настройки API")
-api_key = st.sidebar.text_input("API Key", value=DEFAULT_API_KEY, type="password")
+api_key = st.sidebar.text_input("API Key", value=st.secrets.get("novita_api_key", ""), type="password")
 
-# Создаем вкладки для разделения функционала
+# Боковая панель: Отслеживание задач
+st.sidebar.header("📈 Отслеживание задач")
+
+with st.sidebar.expander("🔍 Проверить статус задачи"):
+    input_task_id = st.text_input("Введите Task ID", key="input_task_id")
+    if st.button("Проверить статус", key="check_status"):
+        if not input_task_id:
+            st.error("❌ Task ID не может быть пустым!")
+        else:
+            task = server_state.tasks.get(input_task_id)
+            if task:
+                status = task['status']
+                progress = task['progress']
+                result = task['result']
+                start_time = task['start_time']
+                end_time = task['end_time']
+    
+                st.write(f"**Task ID:** {input_task_id}")
+                st.write(f"**Статус:** {status}")
+                st.progress(progress)
+                st.write(f"**Начало:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}")
+                if end_time:
+                    st.write(f"**Завершение:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_time))}")
+                else:
+                    st.write("**Завершение:** В процессе")
+    
+                if status == 'completed':
+                    st.write(f"**Результат:** {result}")
+                elif status == 'failed':
+                    st.error(f"**Ошибка:** {result}")
+            else:
+                st.error("❌ Задача с таким ID не найдена.")
+
+# Вкладки приложения
 tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста"])
 
 ########################################
@@ -522,16 +269,16 @@ with tabs[0]:
         if st.button("🔄 Обновить список моделей (Обработка текста)", key="refresh_models_text"):
             if not api_key:
                 st.error("❌ Ключ API пуст")
-                st.session_state["model_list_text"] = []
+                server_state.tasks['model_list_text'] = []
             else:
                 model_list_text = get_model_list(api_key)
-                st.session_state["model_list_text"] = model_list_text
+                server_state.tasks['model_list_text'] = model_list_text
 
-        if "model_list_text" not in st.session_state:
-            st.session_state["model_list_text"] = []
+        if 'model_list_text' not in server_state.tasks:
+            server_state.tasks['model_list_text'] = []
 
-        if len(st.session_state["model_list_text"]) > 0:
-            selected_model_text = st.selectbox("✅ Выберите модель для обработки текста", st.session_state["model_list_text"], key="select_model_text")
+        if len(server_state.tasks['model_list_text']) > 0:
+            selected_model_text = st.selectbox("✅ Выберите модель для обработки текста", server_state.tasks['model_list_text'], key="select_model_text")
         else:
             selected_model_text = st.selectbox(
                 "✅ Выберите модель для обработки текста",
@@ -659,14 +406,16 @@ with tabs[0]:
                     st.warning(f"⚠️ Файл содержит {row_count} строк. Это превышает рекомендованный лимит в 100000.")
                 st.info("🔄 Начинаем обработку, пожалуйста подождите...")
 
-                df_out_text = process_file(
+                # Отправка задачи в фоновый режим
+                task_id = submit_task(
+                    process_file,
                     api_key=api_key,
                     model=selected_model_text,
                     system_prompt=system_prompt_text,
                     user_prompt=user_prompt_text,
                     df=df_text,
                     title_col=title_col_text,
-                    response_format="csv",  # уже не используем, но пусть есть
+                    response_format="csv",
                     max_tokens=max_tokens_text,
                     temperature=temperature_text,
                     top_p=top_p_text,
@@ -675,27 +424,16 @@ with tabs[0]:
                     presence_penalty=presence_penalty_text,
                     frequency_penalty=frequency_penalty_text,
                     repetition_penalty=repetition_penalty_text,
-                    chunk_size=10,  # фиксируем 10 строк в чанке
+                    chunk_size=10,
                     max_workers=max_workers_text
                 )
 
-                st.success("✅ Обработка завершена!")
+                st.success(f"✅ Обработка начата! Ваш Task ID: {task_id}")
+                st.info("Сохраните этот ID, чтобы отслеживать прогресс.")
 
-                # Скачивание
-                output_format = st.selectbox("📥 Формат вывода", ["csv", "txt"], key="output_format_text")
-                if output_format == "csv":
-                    csv_out_text = df_out_text.to_csv(index=False).encode("utf-8")
-                    st.download_button("📥 Скачать результат (CSV)", data=csv_out_text, file_name="result.csv", mime="text/csv")
-                else:
-                    txt_out_text = df_out_text.to_csv(index=False, sep="|", header=False).encode("utf-8")
-                    st.download_button("📥 Скачать результат (TXT)", data=txt_out_text, file_name="result.txt", mime="text/plain")
-
-                st.write("### 📊 Логи")
-                st.write(f"✅ Обработка завершена, строк обработано: {len(df_out_text)}")
-
-########################################
-# Вкладка 2: Перевод текста
-########################################
+    ########################################
+    # Вкладка 2: Перевод текста
+    ########################################
 with tabs[1]:
     st.header("🌐 Перевод текста")
 
@@ -745,16 +483,16 @@ with tabs[1]:
         if st.button("🔄 Обновить список моделей (Перевод текста)", key="refresh_models_translate"):
             if not api_key:
                 st.error("❌ Ключ API пуст")
-                st.session_state["model_list_translate"] = []
+                server_state.tasks['model_list_translate'] = []
             else:
                 model_list_translate = get_model_list(api_key)
-                st.session_state["model_list_translate"] = model_list_translate
+                server_state.tasks['model_list_translate'] = model_list_translate
 
-        if "model_list_translate" not in st.session_state:
-            st.session_state["model_list_translate"] = []
+        if 'model_list_translate' not in server_state.tasks:
+            server_state.tasks['model_list_translate'] = []
 
-        if len(st.session_state["model_list_translate"]) > 0:
-            selected_model_translate = st.selectbox("✅ Выберите модель для перевода текста", st.session_state["model_list_translate"], key="select_model_translate")
+        if len(server_state.tasks['model_list_translate']) > 0:
+            selected_model_translate = st.selectbox("✅ Выберите модель для перевода текста", server_state.tasks['model_list_translate'], key="select_model_translate")
         else:
             selected_model_translate = st.selectbox(
                 "✅ Выберите модель для перевода текста",
@@ -863,8 +601,9 @@ with tabs[1]:
                 # Пользовательский промпт для перевода
                 user_prompt_translate = f"Translate the following text from {source_language} to {target_language}:"
 
-                # Обработка перевода
-                df_translated = process_translation_file(
+                # Отправка задачи перевода в фоновый режим
+                task_id_translate = submit_task(
+                    process_translation_file,
                     api_key=api_key,
                     model=selected_model_translate,
                     system_prompt=system_prompt_translate,
@@ -883,15 +622,39 @@ with tabs[1]:
                     max_workers=max_workers_translate
                 )
 
-                st.success("✅ Перевод завершен!")
+                st.success(f"✅ Перевод начат! Ваш Task ID: {task_id_translate}")
+                st.info("Сохраните этот ID, чтобы отслеживать прогресс.")
 
-                # Скачивание
-                if translate_output_format == "csv":
-                    csv_translated = df_translated.to_csv(index=False).encode("utf-8")
-                    st.download_button("📥 Скачать переведенный файл (CSV)", data=csv_translated, file_name="translated_result.csv", mime="text/csv")
-                else:
-                    txt_translated = df_translated.to_csv(index=False, sep="|", header=False).encode("utf-8")
-                    st.download_button("📥 Скачать переведенный файл (TXT)", data=txt_translated, file_name="translated_result.txt", mime="text/plain")
+# Отображение текущего статуса задачи
+if 'current_task_id' not in st.session_state:
+    st.session_state.current_task_id = None
 
-                st.write("### 📊 Логи")
-                st.write(f"✅ Перевод завершен, строк переведено: {len(df_translated)}")
+if st.session_state.current_task_id:
+    task = server_state.tasks.get(st.session_state.current_task_id)
+    if task:
+        status = task['status']
+        progress = task['progress']
+        result = task['result']
+        start_time = task['start_time']
+        end_time = task['end_time']
+
+        st.write(f"**Текущая задача:** {st.session_state.current_task_id}")
+        st.write(f"**Статус:** {status}")
+        st.progress(progress)
+        st.write(f"**Начало:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}")
+        if end_time:
+            st.write(f"**Завершение:** {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_time))}")
+        else:
+            st.write("**Завершение:** В процессе")
+
+        if status == 'completed':
+            st.write(f"**Результат:** {result}")
+            st.session_state.current_task_id = None  # Сброс после завершения
+            st.success("✅ Задача завершена!")
+        elif status == 'failed':
+            st.error(f"**Ошибка:** {result}")
+            st.session_state.current_task_id = None  # Сброс после ошибки
+        else:
+            # Автообновление каждые 5 секунд
+            st_autorefresh(interval=5000, key="progress_refresh_current_task")
+
