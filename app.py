@@ -10,9 +10,6 @@ import concurrent.futures
 import pandas as pd
 import streamlit.components.v1 as components
 
-# ============================
-# Подключение к Базе Данных (PostgreSQL на Railway)
-# ============================
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.sql import func
@@ -31,7 +28,6 @@ else:
 
 if db_enabled:
     try:
-        # Для PostgreSQL используем драйвер psycopg2
         engine = create_engine(DATABASE_URL, echo=False)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         Base = declarative_base()
@@ -39,16 +35,15 @@ if db_enabled:
         st.error(f"Ошибка при создании engine: {e}")
         db_enabled = False
 
-# Определяем модель для хранения истории задач
+# Пример модели (таблица для хранения истории задач)
 if db_enabled:
     class TaskHistory(Base):
         __tablename__ = "task_history"
         id = Column(Integer, primary_key=True, index=True)
-        task_type = Column(String(255), nullable=False)  # например, "Обработка текста" или "Перевод текста"
+        task_type = Column(String(255), nullable=False)  # Например, "Обработка текста" или "Перевод текста"
         details = Column(Text, nullable=True)
         created_at = Column(DateTime, server_default=func.now())
 
-    # Функция для создания таблиц (если их ещё нет)
     def init_db():
         try:
             Base.metadata.create_all(bind=engine)
@@ -83,6 +78,7 @@ if db_enabled:
             return []
         finally:
             db.close()
+
 
 # ============================
 # 1) НАСТРОЙКИ ПРИЛОЖЕНИЯ
