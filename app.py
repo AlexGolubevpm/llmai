@@ -1,3 +1,6 @@
+import streamlit as st
+st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
+
 import os
 import time
 import json
@@ -5,8 +8,8 @@ import re
 import requests
 import concurrent.futures
 import pandas as pd
-import streamlit as st
 import streamlit.components.v1 as components
+
 
 # ============================
 # Подключение к Базе Данных (MS SQL на Railway)
