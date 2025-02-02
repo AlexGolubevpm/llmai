@@ -15,6 +15,24 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.sql import func
 from sqlalchemy.exc import SQLAlchemyError
 from dotenv import load_dotenv
+load_dotenv()
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    st.warning("DATABASE_URL не задана.")
+    db_enabled = False
+else:
+    db_enabled = True
+
+if db_enabled:
+    try:
+        # Обратите внимание: для PostgreSQL не нужен параметр fast_executemany
+        engine = create_engine(DATABASE_URL, echo=False)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        Base = declarative_base()
+    except Exception as e:
+        st.error(f"Ошибка при создании engine: {e}")
+        db_enabled = False
 
 # Загружаем переменные окружения из файла .env
 load_dotenv()
