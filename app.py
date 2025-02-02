@@ -101,8 +101,6 @@ DEFAULT_API_KEY = "sk_MyidbhnT9jXzw-YDymhijjY8NF15O0Qy7C36etNTAxE"
 # Максимальное количество повторных попыток при 429 (Rate Limit)
 MAX_RETRIES = 3
 
-st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
-
 # ============================
 # 2) ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================
