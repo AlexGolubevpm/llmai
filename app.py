@@ -10,22 +10,19 @@ import concurrent.futures
 import pandas as pd
 import streamlit.components.v1 as components
 
-
 # ============================
-# Подключение к Базе Данных (MS SQL на Railway)
+# Подключение к Базе Данных (PostgreSQL на Railway)
 # ============================
-
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.sql import func
 from sqlalchemy.exc import SQLAlchemyError
 from dotenv import load_dotenv
 
-# Загружаем переменные окружения из файла .env (для локальной разработки)
+# Загружаем переменные окружения из файла .env
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-# Если переменная не задана, можно продолжить работу без функционала БД (или остановить приложение)
 if not DATABASE_URL:
     st.warning("DATABASE_URL не задана. Функциональность истории задач будет недоступна.")
     db_enabled = False
@@ -34,7 +31,8 @@ else:
 
 if db_enabled:
     try:
-        engine = create_engine(DATABASE_URL, echo=False, fast_executemany=True)
+        # Для PostgreSQL используем драйвер psycopg2
+        engine = create_engine(DATABASE_URL, echo=False)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         Base = declarative_base()
     except SQLAlchemyError as e:
@@ -89,7 +87,6 @@ if db_enabled:
 # ============================
 # 1) НАСТРОЙКИ ПРИЛОЖЕНИЯ
 # ============================
-
 # Базовый URL API Novita
 API_BASE_URL = "https://api.novita.ai/v3/openai"
 LIST_MODELS_ENDPOINT = f"{API_BASE_URL}/models"
@@ -101,49 +98,30 @@ DEFAULT_API_KEY = "sk_MyidbhnT9jXzw-YDymhijjY8NF15O0Qy7C36etNTAxE"
 # Максимальное количество повторных попыток при 429 (Rate Limit)
 MAX_RETRIES = 3
 
+# (Удалите повторный вызов st.set_page_config, он уже был вызван в самом начале)
+
 # ============================
 # 2) ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================
-
 def custom_postprocess_text(text: str) -> str:
-    """
-    Обновлённая функция постобработки:
-    1. Удаляет фрагменты, начинающиеся с "Note:" (без учета регистра).
-    2. Удаляет нежелательные слова "fucking", "explicit" и "intense" в начале предложения.
-    3. Заменяет цензурированное "F***" на "fuck".
-    4. Удаляет китайские символы.
-    5. Удаляет эмодзи.
-    6. Убирает все двойные кавычки и лишние пробелы.
-    """
-    # 1. Удаляем фрагменты, начинающиеся с "Note:"
+    # (Ваш код постобработки, без изменений)
     text = re.sub(r'\s*Note:.*', '', text, flags=re.IGNORECASE)
-
-    # 2. Удаляем нежелательные слова в начале предложений
     pattern_sentence = re.compile(r'(^|(?<=[.!?]\s))\s*(?:fucking|explicit|intense)[\s,:\-]+', flags=re.IGNORECASE)
     text = pattern_sentence.sub(r'\1', text)
-
-    # 3. Заменяем "F***" на "fuck"
     text = re.sub(r'\bF\*+\b', 'fuck', text, flags=re.IGNORECASE)
-
-    # 4. Удаляем китайские символы (диапазон Unicode для CJK)
     text = re.sub(r'[\u4e00-\u9fff]+', '', text)
-
-    # 5. Удаляем эмодзи
     emoji_pattern = re.compile("[" 
-                               u"\U0001F600-\U0001F64F"  # лица и эмоции
-                               u"\U0001F300-\U0001F5FF"  # символы и пиктограммы
-                               u"\U0001F680-\U0001F6FF"  # транспорт и карты
-                               u"\U0001F1E0-\U0001F1FF"  # флаги
+                               u"\U0001F600-\U0001F64F"  
+                               u"\U0001F300-\U0001F5FF"  
+                               u"\U0001F680-\U0001F6FF"  
+                               u"\U0001F1E0-\U0001F1FF"  
                                "]+", flags=re.UNICODE)
     text = emoji_pattern.sub(r'', text)
-
-    # 6. Убираем двойные кавычки и лишние пробелы
     text = text.replace('"', '')
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
 def get_model_list(api_key: str):
-    """Загружаем список моделей через API Novita AI"""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
@@ -161,20 +139,10 @@ def get_model_list(api_key: str):
         st.error(f"Ошибка при получении списка моделей: {e}")
         return []
 
-def chat_completion_request(
-    api_key: str,
-    messages: list,
-    model: str,
-    max_tokens: int,
-    temperature: float,
-    top_p: float,
-    min_p: float,
-    top_k: int,
-    presence_penalty: float,
-    frequency_penalty: float,
-    repetition_penalty: float
-):
-    """Синхронный запрос к API chat-комплишена с обработкой 429."""
+def chat_completion_request(api_key: str, messages: list, model: str,
+                              max_tokens: int, temperature: float, top_p: float,
+                              min_p: float, top_k: int, presence_penalty: float,
+                              frequency_penalty: float, repetition_penalty: float):
     payload = {
         "model": model,
         "messages": messages,
@@ -208,62 +176,27 @@ def chat_completion_request(
             return f"Исключение: {e}"
     return "Ошибка: Превышено число попыток при 429 RATE_LIMIT."
 
-def process_single_row(
-    api_key: str,
-    model: str,
-    system_prompt: str,
-    user_prompt: str,
-    row_text: str,
-    max_tokens: int,
-    temperature: float,
-    top_p: float,
-    min_p: float,
-    top_k: int,
-    presence_penalty: float,
-    frequency_penalty: float,
-    repetition_penalty: float
-):
-    """Обёртка для параллельного вызова обработки строки."""
+def process_single_row(api_key: str, model: str, system_prompt: str,
+                       user_prompt: str, row_text: str, max_tokens: int,
+                       temperature: float, top_p: float, min_p: float, top_k: int,
+                       presence_penalty: float, frequency_penalty: float,
+                       repetition_penalty: float):
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": f"{user_prompt}\n{row_text}"}
     ]
-    raw_response = chat_completion_request(
-        api_key,
-        messages,
-        model,
-        max_tokens,
-        temperature,
-        top_p,
-        min_p,
-        top_k,
-        presence_penalty,
-        frequency_penalty,
-        repetition_penalty
-    )
+    raw_response = chat_completion_request(api_key, messages, model, max_tokens,
+                                             temperature, top_p, min_p, top_k,
+                                             presence_penalty, frequency_penalty,
+                                             repetition_penalty)
     final_response = custom_postprocess_text(raw_response)
     return final_response
 
-def process_file(
-    api_key: str,
-    model: str,
-    system_prompt: str,
-    user_prompt: str,
-    df: pd.DataFrame,
-    title_col: str,
-    response_format: str,
-    max_tokens: int,
-    temperature: float,
-    top_p: float,
-    min_p: float,
-    top_k: int,
-    presence_penalty: float,
-    frequency_penalty: float,
-    repetition_penalty: float,
-    chunk_size: int = 10,
-    max_workers: int = 5
-):
-    """Параллельная обработка файла построчно (или чанками)."""
+def process_file(api_key: str, model: str, system_prompt: str, user_prompt: str,
+                 df: pd.DataFrame, title_col: str, response_format: str, max_tokens: int,
+                 temperature: float, top_p: float, min_p: float, top_k: int,
+                 presence_penalty: float, frequency_penalty: float, repetition_penalty: float,
+                 chunk_size: int = 10, max_workers: int = 5):
     progress_bar = st.progress(0)
     time_placeholder = st.empty()
     results = []
@@ -281,20 +214,9 @@ def process_file(
             for i, row_idx in enumerate(chunk_indices):
                 row_text = str(df.loc[row_idx, title_col])
                 future = executor.submit(
-                    process_single_row,
-                    api_key,
-                    model,
-                    system_prompt,
-                    user_prompt,
-                    row_text,
-                    max_tokens,
-                    temperature,
-                    top_p,
-                    min_p,
-                    top_k,
-                    presence_penalty,
-                    frequency_penalty,
-                    repetition_penalty
+                    process_single_row, api_key, model, system_prompt, user_prompt,
+                    row_text, max_tokens, temperature, top_p, min_p, top_k,
+                    presence_penalty, frequency_penalty, repetition_penalty
                 )
                 future_to_i[future] = i
             for future in concurrent.futures.as_completed(future_to_i):
@@ -321,88 +243,38 @@ def process_file(
     time_placeholder.success(f"Обработка завершена за {elapsed:.1f} секунд.")
     return df_out
 
-# Функции для перевода
-def translate_completion_request(
-    api_key: str,
-    messages: list,
-    model: str,
-    max_tokens: int,
-    temperature: float,
-    top_p: float,
-    min_p: float,
-    top_k: int,
-    presence_penalty: float,
-    frequency_penalty: float,
-    repetition_penalty: float
-):
-    raw_response = chat_completion_request(
-        api_key,
-        messages,
-        model,
-        max_tokens,
-        temperature,
-        top_p,
-        min_p,
-        top_k,
-        presence_penalty,
-        frequency_penalty,
-        repetition_penalty
-    )
+def translate_completion_request(api_key: str, messages: list, model: str,
+                                   max_tokens: int, temperature: float, top_p: float,
+                                   min_p: float, top_k: int, presence_penalty: float,
+                                   frequency_penalty: float, repetition_penalty: float):
+    raw_response = chat_completion_request(api_key, messages, model, max_tokens,
+                                             temperature, top_p, min_p, top_k,
+                                             presence_penalty, frequency_penalty,
+                                             repetition_penalty)
     final_response = custom_postprocess_text(raw_response)
     return final_response
 
-def process_translation_single_row(
-    api_key: str,
-    model: str,
-    system_prompt: str,
-    user_prompt: str,
-    row_text: str,
-    max_tokens: int,
-    temperature: float,
-    top_p: float,
-    min_p: float,
-    top_k: int,
-    presence_penalty: float,
-    frequency_penalty: float,
-    repetition_penalty: float
-):
+def process_translation_single_row(api_key: str, model: str, system_prompt: str,
+                                   user_prompt: str, row_text: str, max_tokens: int,
+                                   temperature: float, top_p: float, min_p: float, top_k: int,
+                                   presence_penalty: float, frequency_penalty: float,
+                                   repetition_penalty: float):
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": f"{user_prompt}\n{row_text}"}
     ]
-    translated_text = translate_completion_request(
-        api_key=api_key,
-        messages=messages,
-        model=model,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        top_p=top_p,
-        min_p=min_p,
-        top_k=top_k,
-        presence_penalty=presence_penalty,
-        frequency_penalty=frequency_penalty,
-        repetition_penalty=repetition_penalty
-    )
+    translated_text = translate_completion_request(api_key, messages, model,
+                                                     max_tokens, temperature, top_p,
+                                                     min_p, top_k, presence_penalty,
+                                                     frequency_penalty, repetition_penalty)
     return translated_text
 
-def process_translation_file(
-    api_key: str,
-    model: str,
-    system_prompt: str,
-    user_prompt: str,
-    df: pd.DataFrame,
-    title_col: str,
-    max_tokens: int,
-    temperature: float,
-    top_p: float,
-    min_p: float,
-    top_k: int,
-    presence_penalty: float,
-    frequency_penalty: float,
-    repetition_penalty: float,
-    chunk_size: int = 10,
-    max_workers: int = 5
-):
+def process_translation_file(api_key: str, model: str, system_prompt: str, user_prompt: str,
+                             df: pd.DataFrame, title_col: str, max_tokens: int,
+                             temperature: float, top_p: float, min_p: float, top_k: int,
+                             presence_penalty: float, frequency_penalty: float,
+                             repetition_penalty: float, chunk_size: int = 10,
+                             max_workers: int = 5):
     progress_bar = st.progress(0)
     time_placeholder = st.empty()
     results = []
@@ -420,20 +292,9 @@ def process_translation_file(
             for i, row_idx in enumerate(chunk_indices):
                 row_text = str(df.loc[row_idx, title_col])
                 future = executor.submit(
-                    process_translation_single_row,
-                    api_key,
-                    model,
-                    system_prompt,
-                    user_prompt,
-                    row_text,
-                    max_tokens,
-                    temperature,
-                    top_p,
-                    min_p,
-                    top_k,
-                    presence_penalty,
-                    frequency_penalty,
-                    repetition_penalty
+                    process_translation_single_row, api_key, model, system_prompt, user_prompt,
+                    row_text, max_tokens, temperature, top_p, min_p, top_k,
+                    presence_penalty, frequency_penalty, repetition_penalty
                 )
                 future_to_i[future] = i
             for future in concurrent.futures.as_completed(future_to_i):
@@ -508,20 +369,15 @@ PRESETS = {
         "frequency_penalty": 0.35,
         "repetition_penalty": 1.30
     }
-    # Дополнительные пресеты можно добавить по необходимости
 }
 
 # ============================
 # 4) ИНТЕРФЕЙС
 # ============================
-
 st.title("🧠 Novita AI Batch Processor")
 
-# Поле ввода API Key (общий для всех вкладок)
 st.sidebar.header("🔑 Настройки API")
 api_key = st.sidebar.text_input("API Key", value=DEFAULT_API_KEY, type="password")
-
-# Если хотите добавить кнопку для сохранения результатов в базу данных, можно сделать это позже.
 
 # Создаём вкладки: обработка текста, перевод текста и история задач
 tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста", "📊 История задач"])
@@ -531,7 +387,6 @@ tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод т�
 ########################################
 with tabs[0]:
     st.header("🔄 Обработка текста")
-
     with st.expander("🎨 Выбор пресета модели", expanded=True):
         preset_names = list(PRESETS.keys())
         selected_preset = st.selectbox("Выберите пресет", preset_names, index=0)
@@ -545,7 +400,6 @@ with tabs[0]:
         presence_penalty_text = preset["presence_penalty"]
         frequency_penalty_text = preset["frequency_penalty"]
         repetition_penalty_text = preset["repetition_penalty"]
-
         if st.button("Сбросить настройки пресета", key="reset_preset_text"):
             selected_preset = "Default"
             preset = PRESETS[selected_preset]
@@ -558,10 +412,8 @@ with tabs[0]:
             presence_penalty_text = preset["presence_penalty"]
             frequency_penalty_text = preset["frequency_penalty"]
             repetition_penalty_text = preset["repetition_penalty"]
-
     st.markdown("---")
     left_col, right_col = st.columns([1, 1])
-
     with left_col:
         st.subheader("📚 Список моделей для обработки текста")
         st.caption("🔄 Список моделей загружается из API Novita AI")
@@ -582,7 +434,6 @@ with tabs[0]:
                 ["meta-llama/llama-3.1-8b-instruct", "Nous-Hermes-2-Mixtral-8x7B-DPO"],
                 key="select_model_default_text"
             )
-
     with right_col:
         with st.expander("⚙️ Настройки генерации", expanded=True):
             st.subheader("⚙️ Параметры генерации для обработки текста")
@@ -595,7 +446,6 @@ with tabs[0]:
             presence_penalty_text = st.slider("⚖️ presence_penalty", min_value=0.0, max_value=2.0, value=presence_penalty_text, step=0.01, key="presence_penalty_text")
             frequency_penalty_text = st.slider("📉 frequency_penalty", min_value=0.0, max_value=2.0, value=frequency_penalty_text, step=0.01, key="frequency_penalty_text")
             repetition_penalty_text = st.slider("🔁 repetition_penalty", min_value=0.0, max_value=2.0, value=repetition_penalty_text, step=0.01, key="repetition_penalty_text")
-
     st.markdown("---")
     st.subheader("📝 Одиночный промпт")
     user_prompt_single_text = st.text_area("Введите ваш промпт для одиночной генерации", key="user_prompt_single_text")
@@ -626,7 +476,6 @@ with tabs[0]:
             final_response = custom_postprocess_text(raw_response)
             st.success("✅ Результат получен!")
             st.text_area("📄 Ответ от модели", value=final_response, height=200)
-
     st.markdown("---")
     st.subheader("📂 Обработка данных из файла")
     user_prompt_text = st.text_area("Пользовательский промпт (дополнительно к заголовку)", key="user_prompt_text")
@@ -859,7 +708,6 @@ with tabs[2]:
     else:
         tasks = get_all_tasks()
         if tasks:
-            # Преобразуем объекты в список словарей для отображения
             task_data = [
                 {
                     "ID": t.id,
@@ -872,8 +720,6 @@ with tabs[2]:
             st.dataframe(pd.DataFrame(task_data))
         else:
             st.info("Нет сохранённых задач.")
-
-        # Кнопка для демонстрации сохранения тестовой задачи
         if st.button("Сохранить тестовую задачу"):
             new_task = save_task("Тестовая задача", "Демонстрационная запись")
             if new_task:
