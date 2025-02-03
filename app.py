@@ -176,16 +176,23 @@ def process_file(
     chunk_size: int = 10,
     max_workers: int = 5
 ):
-    """Параллельная обработка файла построчно с использованием чанков и отображением прогресс-бара."""
+    """
+    Параллельная обработка файла построчно с использованием чанков.
+    Отображается прогресс-бар и примерное оставшееся время.
+    """
     results = []
     total_rows = len(df)
     progress_bar = st.progress(0)
-    
+    time_placeholder = st.empty()  # для отображения оставшегося времени
+    overall_start = time.time()
+    rows_processed = 0
+
     for start_idx in range(0, total_rows, chunk_size):
+        chunk_start = time.time()
         end_idx = min(start_idx + chunk_size, total_rows)
         chunk_indices = list(df.index[start_idx:end_idx])
         chunk_results = [None] * len(chunk_indices)
-        
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_i = {}
             for i, row_idx in enumerate(chunk_indices):
@@ -210,10 +217,25 @@ def process_file(
             for future in concurrent.futures.as_completed(future_to_i):
                 i = future_to_i[future]
                 chunk_results[i] = future.result()
-        
+
         results.extend(chunk_results)
-        progress_bar.progress(min((start_idx + len(chunk_results)) / total_rows, 1.0))
-    
+        rows_processed += len(chunk_indices)
+        progress_bar.progress(min(rows_processed / total_rows, 1.0))
+
+        # Расчет оставшегося времени
+        chunk_time = time.time() - chunk_start
+        if len(chunk_indices) > 0:
+            time_per_row = chunk_time / len(chunk_indices)
+            rows_left = total_rows - rows_processed
+            est_time_sec = rows_left * time_per_row
+            if est_time_sec < 60:
+                time_text = f"~{est_time_sec:.1f} сек."
+            else:
+                time_text = f"~{est_time_sec/60:.1f} мин."
+            time_placeholder.info(f"Примерное оставшееся время: {time_text}")
+
+    overall_time = time.time() - overall_start
+    time_placeholder.success(f"Обработка завершена за {overall_time:.1f} сек.")
     df_out = df.copy()
     df_out["rewrite"] = results
     return df_out
@@ -301,16 +323,23 @@ def process_translation_file(
     chunk_size: int = 10,
     max_workers: int = 5
 ):
-    """Параллельная обработка файла для перевода с использованием чанков и отображением прогресс-бара."""
+    """
+    Параллельная обработка файла для перевода с использованием чанков.
+    Отображается прогресс-бар и примерное оставшееся время.
+    """
     results = []
     total_rows = len(df)
     progress_bar = st.progress(0)
-    
+    time_placeholder = st.empty()
+    overall_start = time.time()
+    rows_processed = 0
+
     for start_idx in range(0, total_rows, chunk_size):
+        chunk_start = time.time()
         end_idx = min(start_idx + chunk_size, total_rows)
         chunk_indices = list(df.index[start_idx:end_idx])
         chunk_results = [None] * len(chunk_indices)
-        
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_i = {}
             for i, row_idx in enumerate(chunk_indices):
@@ -335,10 +364,24 @@ def process_translation_file(
             for future in concurrent.futures.as_completed(future_to_i):
                 i = future_to_i[future]
                 chunk_results[i] = future.result()
-        
+
         results.extend(chunk_results)
-        progress_bar.progress(min((start_idx + len(chunk_results)) / total_rows, 1.0))
-    
+        rows_processed += len(chunk_indices)
+        progress_bar.progress(min(rows_processed / total_rows, 1.0))
+
+        chunk_time = time.time() - chunk_start
+        if len(chunk_indices) > 0:
+            time_per_row = chunk_time / len(chunk_indices)
+            rows_left = total_rows - rows_processed
+            est_time_sec = rows_left * time_per_row
+            if est_time_sec < 60:
+                time_text = f"~{est_time_sec:.1f} сек."
+            else:
+                time_text = f"~{est_time_sec/60:.1f} мин."
+            time_placeholder.info(f"Примерное оставшееся время: {time_text}")
+
+    overall_time = time.time() - overall_start
+    time_placeholder.success(f"Перевод завершен за {overall_time:.1f} сек.")
     df_out = df.copy()
     df_out["translated_title"] = results
     return df_out
