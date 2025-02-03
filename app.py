@@ -7,69 +7,92 @@ import time
 import concurrent.futures
 import re
 import threading
+import uuid
+import redis
+from dotenv import load_dotenv
+import os
+
+# Загружаем переменные из файла .env
+load_dotenv()
 
 #######################################
-# 0) Глобальное логирование ошибок
+# 0) НАСТРОЙКИ UPSTASH REDIS через .env
 #######################################
+UPSTASH_HOST = os.getenv("UPSTASH_REDIS_HOST")
+UPSTASH_PORT = int(os.getenv("UPSTASH_REDIS_PORT", 6379))
+UPSTASH_PASSWORD = os.getenv("UPSTASH_REDIS_PASSWORD")
 
+# Подключаемся к Upstash Redis
+redis_conn = redis.Redis(
+    host=UPSTASH_HOST,
+    port=UPSTASH_PORT,
+    password=UPSTASH_PASSWORD,
+    ssl=True,
+    decode_responses=True  # чтобы получать строки, а не байты
+)
+
+#######################################
+# 1) ГЛОБАЛЬНОЕ ЛОГИРОВАНИЕ ОШИБОК
+#######################################
 error_logs_lock = threading.Lock()
-error_logs = []
+error_logs = []  # локальный список ошибок
 
 def log_error(message: str):
-    """Добавляет сообщение об ошибке в глобальный список с отметкой времени."""
+    """Добавляет сообщение об ошибке с отметкой времени в локальный список и сохраняет в Redis."""
     with error_logs_lock:
         timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
-        error_logs.append(f"{timestamp} - {message}")
-    # Также можно распечатать в консоль:
-    print(f"{timestamp} - {message}")
+        log_message = f"{timestamp} - {message}"
+        error_logs.append(log_message)
+        # Сохраняем в Redis: добавляем в список 'error_logs'
+        redis_conn.rpush("error_logs", log_message)
+    print(log_message)
 
 #######################################
-# 1) НАСТРОЙКИ ПРИЛОЖЕНИЯ
+# 2) ФУНКЦИИ ДЛЯ ОБНОВЛЕНИЯ ПРОГРЕССА ЗАДАЧИ
 #######################################
+def update_job_progress(job_id: str, progress: int):
+    """Сохраняет текущий прогресс задачи (в процентах) в Redis по ключу job:{job_id}:progress"""
+    redis_conn.set(f"job:{job_id}:progress", progress)
 
+def get_job_progress(job_id: str) -> int:
+    """Извлекает прогресс задачи из Redis. Если значение не найдено, возвращает 0."""
+    progress = redis_conn.get(f"job:{job_id}:progress")
+    return int(progress) if progress is not None else 0
+
+#######################################
+# 3) НАСТРОЙКИ ПРИЛОЖЕНИЯ
+#######################################
 # Базовый URL API Novita
 API_BASE_URL = "https://api.novita.ai/v3/openai"
 LIST_MODELS_ENDPOINT = f"{API_BASE_URL}/models"
 CHAT_COMPLETIONS_ENDPOINT = f"{API_BASE_URL}/chat/completions"
 
-# Ключ по умолчанию (НЕБЕЗОПАСНО в реальном проде)
-DEFAULT_API_KEY = "sk_MyidbhnT9jXzw-YDymhijjY8NF15O0Qy7C36etNTAxE"
+# Значение по умолчанию берём из переменных окружения (.env)
+DEFAULT_API_KEY = os.getenv("DEFAULT_API_KEY")
 
-# Максимальное количество повторных попыток при 429 (Rate Limit)
+# Максимальное число повторных попыток при 429 (Rate Limit)
 MAX_RETRIES = 3
 
 st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
 
 #######################################
-# 2) ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# 4) ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 #######################################
-
 def custom_postprocess_text(text: str) -> str:
     """
-    Обновлённая функция постобработки:
-    
-    1. Удаляет фрагменты, начинающиеся с "Note:" (без учета регистра).
-    2. Удаляет нежелательные слова "fucking", "explicit" и "intense", если они появляются в начале любого предложения.
-    3. Заменяет цензурированное "F***" на "fuck".
-    4. Удаляет китайские символы.
-    5. Удаляет эмодзи.
-    6. Убирает все двойные кавычки и лишние пробелы.
+    Функция постобработки текста:
+      1. Удаляет фрагменты, начинающиеся с "Note:".
+      2. Удаляет нежелательные слова ("fucking", "explicit", "intense") в начале предложения.
+      3. Заменяет цензурированное "F***" на "fuck".
+      4. Удаляет китайские символы и эмодзи.
+      5. Убирает двойные кавычки и лишние пробелы.
     """
     try:
-        # 1. Удаляем любые фрагменты, начинающиеся с "Note:" (если они идут с новой строки или после переноса)
         text = re.sub(r'\s*Note:.*', '', text, flags=re.IGNORECASE)
-
-        # 2. Удаляем нежелательные слова в начале любого предложения.
         pattern_sentence = re.compile(r'(^|(?<=[.!?]\s))\s*(?:fucking|explicit|intense)[\s,:\-]+', flags=re.IGNORECASE)
         text = pattern_sentence.sub(r'\1', text)
-
-        # 3. Заменяем цензурированное слово
         text = re.sub(r'\bF\*+\b', 'fuck', text, flags=re.IGNORECASE)
-
-        # 4. Удаляем китайские символы (CJK)
         text = re.sub(r'[\u4e00-\u9fff]+', '', text)
-
-        # 5. Удаляем эмодзи
         emoji_pattern = re.compile("["  
                                    u"\U0001F600-\U0001F64F"  
                                    u"\U0001F300-\U0001F5FF"  
@@ -77,17 +100,14 @@ def custom_postprocess_text(text: str) -> str:
                                    u"\U0001F1E0-\U0001F1FF"  
                                    "]+", flags=re.UNICODE)
         text = emoji_pattern.sub(r'', text)
-
-        # 6. Удаляем все двойные кавычки и лишние пробелы
         text = text.replace('"', '')
         text = re.sub(r'\s+', ' ', text).strip()
-
     except Exception as e:
-        log_error(f"Ошибка в postprocess: {e}")
+        log_error(f"Ошибка в custom_postprocess_text: {e}")
     return text
 
 def get_model_list(api_key: str):
-    """Загружаем список доступных моделей через эндпоинт Novita AI"""
+    """Получает список моделей через API Novita AI."""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
@@ -99,12 +119,12 @@ def get_model_list(api_key: str):
             models = [m["id"] for m in data.get("data", [])]
             return models
         else:
-            error_message = f"Не удалось получить список моделей. Код: {resp.status_code}. Текст: {resp.text}"
+            error_message = f"Ошибка получения списка моделей. Код: {resp.status_code}. Текст: {resp.text}"
             log_error(error_message)
             st.error(error_message)
             return []
     except Exception as e:
-        error_message = f"Ошибка при получении списка моделей: {e}"
+        error_message = f"Исключение при получении списка моделей: {e}"
         log_error(error_message)
         st.error(error_message)
         return []
@@ -122,7 +142,7 @@ def chat_completion_request(
     frequency_penalty: float,
     repetition_penalty: float
 ):
-    """Функция для синхронного (не-стримингового) chat-комплишена с retries на 429."""
+    """Отправляет запрос на чат-комплишен с обработкой ошибок и таймаутом."""
     payload = {
         "model": model,
         "messages": messages,
@@ -135,12 +155,10 @@ def chat_completion_request(
         "repetition_penalty": repetition_penalty,
         "min_p": min_p
     }
-
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}"
     }
-
     attempts = 0
     while attempts < MAX_RETRIES:
         attempts += 1
@@ -158,10 +176,10 @@ def chat_completion_request(
                 log_error(error_message)
                 return error_message
         except Exception as e:
-            error_message = f"Исключение при chat_completion_request: {e}"
+            error_message = f"Исключение в chat_completion_request: {e}"
             log_error(error_message)
             return error_message
-    return "Ошибка: Превышено число попыток при 429 RATE_LIMIT."
+    return "Ошибка: превышено число попыток при 429 RATE_LIMIT."
 
 def process_single_row(
     api_key: str,
@@ -178,7 +196,7 @@ def process_single_row(
     frequency_penalty: float,
     repetition_penalty: float
 ):
-    """Функция-обёртка для параллельного вызова."""
+    """Обрабатывает одну строку (для обработки текста)."""
     try:
         messages = [
             {"role": "system", "content": system_prompt},
@@ -201,7 +219,7 @@ def process_single_row(
         return final_response
     except Exception as e:
         log_error(f"Ошибка в process_single_row: {e}")
-        return f"Ошибка в process_single_row: {e}"
+        return f"Ошибка: {e}"
 
 def process_file(
     api_key: str,
@@ -209,7 +227,7 @@ def process_file(
     system_prompt: str,
     user_prompt: str,
     df: pd.DataFrame,
-    title_col: str,  # Название колонки, которую надо переписать
+    title_col: str,
     response_format: str,
     max_tokens: int,
     temperature: float,
@@ -219,14 +237,13 @@ def process_file(
     presence_penalty: float,
     frequency_penalty: float,
     repetition_penalty: float,
-    chunk_size: int = 10,  # фиксируем 10 строк в чанке
-    max_workers: int = 5  # Количество потоков
+    job_id: str,
+    chunk_size: int = 10,
+    max_workers: int = 5
 ):
-    """Параллельно обрабатываем загруженный файл построчно (или чанками)."""
-
+    """Параллельная обработка файла построчно с обновлением прогресса в Redis."""
     progress_bar = st.progress(0)
     time_placeholder = st.empty()
-
     results = []
     total_rows = len(df)
     start_time = time.time()
@@ -260,20 +277,20 @@ def process_file(
                     repetition_penalty
                 )
                 future_to_i[future] = i
-
             for future in concurrent.futures.as_completed(future_to_i):
                 i = future_to_i[future]
                 try:
                     chunk_results[i] = future.result()
                 except Exception as e:
-                    error_message = f"Ошибка в обработке строки с индексом {i}: {e}"
+                    error_message = f"Ошибка обработки строки с индексом {i}: {e}"
                     log_error(error_message)
                     chunk_results[i] = error_message
 
         results.extend(chunk_results)
         lines_processed += chunk_size_actual
-        progress_bar.progress(lines_processed / total_rows)
-
+        progress = int((lines_processed / total_rows) * 100)
+        progress_bar.progress(progress)
+        update_job_progress(job_id, progress)
         time_for_chunk = time.time() - chunk_start_time
         if chunk_size_actual > 0:
             time_per_line = time_for_chunk / chunk_size_actual
@@ -287,10 +304,12 @@ def process_file(
     df_out["rewrite"] = results
     elapsed = time.time() - start_time
     time_placeholder.success(f"Обработка завершена за {elapsed:.1f} секунд.")
+    update_job_progress(job_id, 100)
+    # Сохраняем итоговую таблицу в Redis (например, в формате CSV)
+    redis_conn.set(f"job:{job_id}:result_csv", df_out.to_csv(index=False))
     return df_out
 
-# ======= Новые функции для перевода =======
-
+# Функции для перевода (аналогичные, с обновлением прогресса)
 def translate_completion_request(
     api_key: str,
     messages: list,
@@ -356,7 +375,7 @@ def process_translation_single_row(
         return translated_text
     except Exception as e:
         log_error(f"Ошибка в process_translation_single_row: {e}")
-        return f"Ошибка в process_translation_single_row: {e}"
+        return f"Ошибка: {e}"
 
 def process_translation_file(
     api_key: str,
@@ -364,7 +383,7 @@ def process_translation_file(
     system_prompt: str,
     user_prompt: str,
     df: pd.DataFrame,
-    title_col: str,  # Название колонки, которую надо перевести
+    title_col: str,
     max_tokens: int,
     temperature: float,
     top_p: float,
@@ -373,8 +392,9 @@ def process_translation_file(
     presence_penalty: float,
     frequency_penalty: float,
     repetition_penalty: float,
-    chunk_size: int = 10,  # фиксируем 10 строк в чанке
-    max_workers: int = 5  # Количество потоков
+    job_id: str,
+    chunk_size: int = 10,
+    max_workers: int = 5
 ):
     progress_bar = st.progress(0)
     time_placeholder = st.empty()
@@ -411,20 +431,20 @@ def process_translation_file(
                     repetition_penalty
                 )
                 future_to_i[future] = i
-
             for future in concurrent.futures.as_completed(future_to_i):
                 i = future_to_i[future]
                 try:
                     chunk_results[i] = future.result()
                 except Exception as e:
-                    error_message = f"Ошибка в обработке перевода строки с индексом {i}: {e}"
+                    error_message = f"Ошибка перевода строки с индексом {i}: {e}"
                     log_error(error_message)
                     chunk_results[i] = error_message
 
         results.extend(chunk_results)
         lines_processed += chunk_size_actual
-        progress_bar.progress(lines_processed / total_rows)
-
+        progress = int((lines_processed / total_rows) * 100)
+        progress_bar.progress(progress)
+        update_job_progress(job_id, progress)
         time_for_chunk = time.time() - chunk_start_time
         if chunk_size_actual > 0:
             time_per_line = time_for_chunk / chunk_size_actual
@@ -438,12 +458,13 @@ def process_translation_file(
     df_out["translated_title"] = results
     elapsed = time.time() - start_time
     time_placeholder.success(f"Перевод завершен за {elapsed:.1f} секунд.")
+    update_job_progress(job_id, 100)
+    redis_conn.set(f"job:{job_id}:result_csv", df_out.to_csv(index=False))
     return df_out
 
 #######################################
-# 3) ПРЕСЕТЫ МОДЕЛЕЙ
+# 5) ПРЕСЕТЫ МОДЕЛЕЙ
 #######################################
-
 PRESETS = {
     "Default": {
         "system_prompt": "Act like you are a helpful assistant.",
@@ -492,24 +513,26 @@ PRESETS = {
 }
 
 #######################################
-# 4) ИНТЕРФЕЙС
+# 6) ИНТЕРФЕЙС Streamlit
 #######################################
-
 st.title("🧠 Novita AI Batch Processor")
 
-# Поле ввода API Key, доступное во всех вкладках
+# Ввод API Key (используется во всех вкладках)
 st.sidebar.header("🔑 Настройки API")
 api_key = st.sidebar.text_input("API Key", value=DEFAULT_API_KEY, type="password")
 
-# Создаем вкладки для разделения функционала (добавлена вкладка логов)
-tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста", "📋 Логи ошибок"])
+# Генерация уникального идентификатора задачи (job_id) для сохранения прогресса
+if "job_id" not in st.session_state:
+    st.session_state.job_id = str(uuid.uuid4())
+
+# Создаём вкладки для разделения функционала: обработка текста, перевод и логи/статус
+tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста", "📋 Логи и Статус"])
 
 ########################################
 # Вкладка 1: Обработка текста
 ########################################
 with tabs[0]:
     st.header("🔄 Обработка текста")
-
     with st.expander("🎨 Выбор пресета модели", expanded=True):
         preset_names = list(PRESETS.keys())
         selected_preset = st.selectbox("Выберите пресет", preset_names, index=0)
@@ -523,7 +546,6 @@ with tabs[0]:
         presence_penalty_text = preset["presence_penalty"]
         frequency_penalty_text = preset["frequency_penalty"]
         repetition_penalty_text = preset["repetition_penalty"]
-
         if st.button("Сбросить настройки пресета", key="reset_preset_text"):
             selected_preset = "Default"
             preset = PRESETS[selected_preset]
@@ -541,19 +563,17 @@ with tabs[0]:
     left_col, right_col = st.columns([1, 1])
     with left_col:
         st.subheader("📚 Список моделей для обработки текста")
-        st.caption("🔄 Список моделей загружается из API Novita AI")
+        st.caption("Список моделей загружается из API Novita AI")
         if st.button("🔄 Обновить список моделей (Обработка текста)", key="refresh_models_text"):
             if not api_key:
-                st.error("❌ Ключ API пуст")
+                st.error("❌ API Key пуст")
                 st.session_state["model_list_text"] = []
             else:
                 model_list_text = get_model_list(api_key)
                 st.session_state["model_list_text"] = model_list_text
-
         if "model_list_text" not in st.session_state:
             st.session_state["model_list_text"] = []
-
-        if len(st.session_state["model_list_text"]) > 0:
+        if st.session_state["model_list_text"]:
             selected_model_text = st.selectbox("✅ Выберите модель для обработки текста", st.session_state["model_list_text"], key="select_model_text")
         else:
             selected_model_text = st.selectbox(
@@ -563,7 +583,7 @@ with tabs[0]:
             )
     with right_col:
         with st.expander("⚙️ Настройки генерации", expanded=True):
-            st.subheader("⚙️ Параметры генерации для обработки текста")
+            st.subheader("Параметры генерации для обработки текста")
             system_prompt_text = st.text_area("📝 System Prompt", value=system_prompt_text, key="system_prompt_text")
             max_tokens_text = st.slider("🔢 max_tokens", min_value=0, max_value=64000, value=max_tokens_text, step=1, key="max_tokens_text")
             temperature_text = st.slider("🌡️ temperature", min_value=0.0, max_value=2.0, value=temperature_text, step=0.01, key="temperature_text")
@@ -575,21 +595,21 @@ with tabs[0]:
             repetition_penalty_text = st.slider("🔁 repetition_penalty", min_value=0.0, max_value=2.0, value=repetition_penalty_text, step=0.01, key="repetition_penalty_text")
 
     st.subheader("📝 Одиночный промпт")
-    user_prompt_single_text = st.text_area("Введите ваш промпт для одиночной генерации", key="user_prompt_single_text")
+    user_prompt_single_text = st.text_area("Введите промпт для одиночной генерации", key="user_prompt_single_text")
     if st.button("🚀 Отправить одиночный промпт (Обработка текста)", key="submit_single_text"):
         if not api_key:
             st.error("❌ API Key не указан!")
         elif not user_prompt_single_text.strip():
             st.error("❌ Промпт не может быть пустым!")
         else:
-            from_text = [
+            messages = [
                 {"role": "system", "content": system_prompt_text},
                 {"role": "user", "content": user_prompt_single_text}
             ]
             st.info("🔄 Отправляем запрос...")
             raw_response = chat_completion_request(
                 api_key=api_key,
-                messages=from_text,
+                messages=messages,
                 model=selected_model_text,
                 max_tokens=max_tokens_text,
                 temperature=temperature_text,
@@ -611,7 +631,6 @@ with tabs[0]:
     with st.expander("📑 Настройки парсинга файла", expanded=True):
         delimiter_input_text = st.text_input("🔸 Разделитель (delimiter)", value="|", key="delimiter_input_text")
         column_input_text = st.text_input("🔸 Названия колонок (через запятую)", value="id,title", key="column_input_text")
-
     uploaded_file_text = st.file_uploader("📤 Прикрепить файл (CSV или TXT, до 100000 строк)", type=["csv", "txt"], key="uploaded_file_text")
     df_text = None
     if uploaded_file_text is not None:
@@ -649,7 +668,7 @@ with tabs[0]:
             else:
                 row_count = len(df_text)
                 if row_count > 100000:
-                    st.warning(f"⚠️ Файл содержит {row_count} строк. Это превышает рекомендованный лимит в 100000.")
+                    st.warning(f"⚠️ Файл содержит {row_count} строк. Это превышает рекомендуемый лимит.")
                 st.info("🔄 Начинаем обработку, пожалуйста подождите...")
                 df_out_text = process_file(
                     api_key=api_key,
@@ -667,6 +686,7 @@ with tabs[0]:
                     presence_penalty=presence_penalty_text,
                     frequency_penalty=frequency_penalty_text,
                     repetition_penalty=repetition_penalty_text,
+                    job_id=st.session_state.job_id,
                     chunk_size=10,
                     max_workers=max_workers_text
                 )
@@ -716,17 +736,17 @@ with tabs[1]:
     left_col_trans, right_col_trans = st.columns([1, 1])
     with left_col_trans:
         st.subheader("📚 Список моделей для перевода текста")
-        st.caption("🔄 Список моделей загружается из API Novita AI")
+        st.caption("Список моделей загружается из API Novita AI")
         if st.button("🔄 Обновить список моделей (Перевод текста)", key="refresh_models_translate"):
             if not api_key:
-                st.error("❌ Ключ API пуст")
+                st.error("❌ API Key пуст")
                 st.session_state["model_list_translate"] = []
             else:
                 model_list_translate = get_model_list(api_key)
                 st.session_state["model_list_translate"] = model_list_translate
         if "model_list_translate" not in st.session_state:
             st.session_state["model_list_translate"] = []
-        if len(st.session_state["model_list_translate"]) > 0:
+        if st.session_state["model_list_translate"]:
             selected_model_translate = st.selectbox("✅ Выберите модель для перевода текста", st.session_state["model_list_translate"], key="select_model_translate")
         else:
             selected_model_translate = st.selectbox(
@@ -736,7 +756,7 @@ with tabs[1]:
             )
     with right_col_trans:
         with st.expander("⚙️ Настройки генерации для перевода", expanded=True):
-            st.subheader("⚙️ Параметры генерации для перевода текста")
+            st.subheader("Параметры генерации для перевода текста")
             translate_output_format = st.selectbox("📥 Формат вывода перевода", ["csv", "txt"], key="translate_output_format")
             system_prompt_translate = st.text_area("📝 System Prompt для перевода", value=system_prompt_translate, key="system_prompt_translate")
             max_tokens_translate = st.slider("🔢 max_tokens (перевод)", min_value=0, max_value=64000, value=max_tokens_translate, step=1, key="max_tokens_translate")
@@ -801,7 +821,7 @@ with tabs[1]:
             else:
                 row_count_translate = len(df_translate)
                 if row_count_translate > 100000:
-                    st.warning(f"⚠️ Файл содержит {row_count_translate} строк. Это превышает рекомендованный лимит в 100000.")
+                    st.warning(f"⚠️ Файл содержит {row_count_translate} строк. Это превышает рекомендуемый лимит.")
                 st.info("🔄 Начинаем перевод, пожалуйста подождите...")
                 user_prompt_translate = f"Translate the following text from {source_language} to {target_language}:"
                 df_translated = process_translation_file(
@@ -819,6 +839,7 @@ with tabs[1]:
                     presence_penalty=presence_penalty_translate,
                     frequency_penalty=frequency_penalty_translate,
                     repetition_penalty=repetition_penalty_translate,
+                    job_id=st.session_state.job_id,
                     chunk_size=10,
                     max_workers=max_workers_translate
                 )
@@ -833,13 +854,23 @@ with tabs[1]:
                 st.write(f"✅ Перевод завершен, строк переведено: {len(df_translated)}")
 
 ########################################
-# Вкладка 3: Логи ошибок
+# Вкладка 3: Логи и статус задачи
 ########################################
 with tabs[2]:
-    st.header("📋 Логи ошибок")
-    st.info("Ниже отображаются все зафиксированные ошибки, включая ошибки API и исключения.")
+    st.header("📋 Логи и статус задачи")
+    st.subheader("Логи ошибок")
     with error_logs_lock:
-        if error_logs:
-            st.text_area("Логи ошибок", "\n".join(error_logs), height=400)
-        else:
-            st.success("Ошибок не зафиксировано.")
+        local_logs = "\n".join(error_logs)
+    st.text_area("Логи ошибок (локальные)", local_logs, height=200)
+    
+    st.subheader("Статус задачи")
+    job_id = st.session_state.job_id
+    progress = get_job_progress(job_id)
+    st.write(f"ID задачи: {job_id}")
+    st.progress(progress)
+    st.write(f"Прогресс: {progress}%")
+    # Если результат уже сохранён в Redis, даём возможность его скачать
+    result_csv = redis_conn.get(f"job:{job_id}:result_csv")
+    if result_csv:
+        st.download_button("📥 Скачать результат обработки (CSV)", data=result_csv.encode("utf-8"), file_name="result_from_redis.csv", mime="text/csv")
+
