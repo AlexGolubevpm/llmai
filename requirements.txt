@@ -1,6 +1,5 @@
 streamlit
 pandas
 requests
-redis
 python-dotenv
 streamlit-cookies-manager
