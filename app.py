@@ -509,7 +509,7 @@ st.sidebar.header("🔑 Настройки API")
 api_key = st.sidebar.text_input("API Key", value=DEFAULT_API_KEY, type="password")
 
 # --- Save job_id via URL parameters using st.query_params and st.set_query_params ---
-query_params = st.query_params()
+query_params = st.query_params
 if "job_id" in query_params and query_params["job_id"]:
     st.session_state.job_id = query_params["job_id"][0]
 else:
@@ -863,3 +863,4 @@ with tabs[2]:
     result_csv = redis_conn.get(f"job:{job_id}:result_csv")
     if result_csv:
         st.download_button("📥 Скачать результат обработки (CSV)", data=result_csv.encode("utf-8"), file_name="result_from_redis.csv", mime="text/csv")
+
