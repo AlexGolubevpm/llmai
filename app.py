@@ -19,9 +19,8 @@ CHAT_COMPLETIONS_ENDPOINT = f"{API_BASE_URL}/chat/completions"
 DEFAULT_API_KEY = "sk_MyidbhnT9jXzw-YDymhijjY8NF15O0Qy7C36etNTAxE"
 MAX_RETRIES = 3
 
-# Максимальный контекст модели (32768 токенов) и число токенов для завершения
-MAX_CONTEXT = 32768
-COMPLETION_TOKENS = 2000  # уменьшили с 32000 до 2000
+# Максимальный размер батча по количеству строк
+BATCH_SIZE = 20
 
 st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
 
@@ -30,6 +29,15 @@ st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
 #######################################
 
 def custom_postprocess_text(text: str) -> str:
+    """
+    Постобработка текста:
+    1. Удаляет фрагменты, начинающиеся с "Note:".
+    2. Удаляет нежелательные слова "fucking", "explicit", "intense" в начале предложения.
+    3. Заменяет "F***" на "fuck".
+    4. Удаляет китайские символы.
+    5. Удаляет эмодзи.
+    6. Убирает двойные кавычки и лишние пробелы.
+    """
     text = re.sub(r'\s*Note:.*', '', text, flags=re.IGNORECASE)
     pattern_sentence = re.compile(r'(^|(?<=[.!?]\s))\s*(?:fucking|explicit|intense)[\s,:\-]+', flags=re.IGNORECASE)
     text = pattern_sentence.sub(r'\1', text)
@@ -45,9 +53,6 @@ def custom_postprocess_text(text: str) -> str:
     text = text.replace('"', '')
     text = re.sub(r'\s+', ' ', text).strip()
     return text
-
-def count_tokens(text: str) -> int:
-    return len(text.split())
 
 def get_model_list(api_key: str):
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
@@ -98,6 +103,10 @@ def chat_completion_request(api_key: str, messages: list, model: str, max_tokens
             return f"Исключение: {e}"
     return "Ошибка: Превышено число попыток при 429 RATE_LIMIT."
 
+# Фиксированный батч: просто собираем первые 20 строк из списка тайтлов
+def prepare_batch(titles: list, batch_size: int = BATCH_SIZE) -> list:
+    return titles[:batch_size]
+
 def process_batch(api_key: str, model: str, system_prompt: str, user_prompt: str, batch_titles: list,
                   max_tokens: int, temperature: float, top_p: float, min_p: float, top_k: int,
                   presence_penalty: float, frequency_penalty: float, repetition_penalty: float) -> list:
@@ -118,29 +127,10 @@ def process_batch(api_key: str, model: str, system_prompt: str, user_prompt: str
             processed = processed[:len(batch_titles)]
     return processed
 
-def prepare_batch(system_prompt: str, user_prompt: str, titles: list,
-                  max_context: int = MAX_CONTEXT, completion_tokens: int = COMPLETION_TOKENS) -> list:
-    """
-    Собирает батч так, чтобы:
-    tokens(system_prompt + user_prompt + батч) <= max_context - completion_tokens.
-    """
-    available_tokens = max_context - completion_tokens - count_tokens(system_prompt) - count_tokens(user_prompt)
-    batch = []
-    total_tokens = 0
-    for title in titles:
-        title_tokens = count_tokens(title)
-        if total_tokens + title_tokens <= available_tokens:
-            batch.append(title)
-            total_tokens += title_tokens
-        else:
-            break
-    return batch
-
 def process_file(api_key: str, model: str, system_prompt: str, user_prompt: str,
                  df: pd.DataFrame, title_col: str, response_format: str, max_tokens: int,
                  temperature: float, top_p: float, min_p: float, top_k: int,
-                 presence_penalty: float, frequency_penalty: float, repetition_penalty: float,
-                 max_token_limit: int = MAX_CONTEXT):
+                 presence_penalty: float, frequency_penalty: float, repetition_penalty: float):
     all_titles = df[title_col].astype(str).tolist()
     results = []
     total_titles = len(all_titles)
@@ -150,7 +140,7 @@ def process_file(api_key: str, model: str, system_prompt: str, user_prompt: str,
     processed_count = 0
 
     while all_titles:
-        batch = prepare_batch(system_prompt, user_prompt, all_titles, max_context=max_token_limit, completion_tokens=COMPLETION_TOKENS)
+        batch = prepare_batch(all_titles, batch_size=BATCH_SIZE)
         batch_start = time.time()
         batch_result = process_batch(api_key, model, system_prompt, user_prompt, batch,
                                      max_tokens, temperature, top_p, min_p, top_k,
@@ -208,8 +198,7 @@ def process_translation_single_row(api_key: str, model: str, system_prompt: str,
 def process_translation_file(api_key: str, model: str, system_prompt: str, user_prompt: str,
                              df: pd.DataFrame, title_col: str, max_tokens: int, temperature: float,
                              top_p: float, min_p: float, top_k: int, presence_penalty: float,
-                             frequency_penalty: float, repetition_penalty: float,
-                             max_token_limit: int = MAX_CONTEXT):
+                             frequency_penalty: float, repetition_penalty: float):
     all_titles = df[title_col].astype(str).tolist()
     results = []
     total_titles = len(all_titles)
@@ -219,7 +208,7 @@ def process_translation_file(api_key: str, model: str, system_prompt: str, user_
     processed_count = 0
 
     while all_titles:
-        batch = prepare_batch(system_prompt, user_prompt, all_titles, max_context=max_token_limit, completion_tokens=COMPLETION_TOKENS)
+        batch = prepare_batch(all_titles, batch_size=BATCH_SIZE)
         batch_start = time.time()
         batch_result = process_batch(api_key, model, system_prompt, user_prompt, batch,
                                      max_tokens, temperature, top_p, min_p, top_k,
@@ -449,8 +438,7 @@ with tabs[0]:
                                            response_format="csv", max_tokens=max_tokens_text,
                                            temperature=temperature_text, top_p=top_p_text, min_p=min_p_text,
                                            top_k=top_k_text, presence_penalty=presence_penalty_text,
-                                           frequency_penalty=frequency_penalty_text, repetition_penalty=repetition_penalty_text,
-                                           max_token_limit=MAX_CONTEXT)
+                                           frequency_penalty=frequency_penalty_text, repetition_penalty=repetition_penalty_text)
                 st.success("✅ Обработка завершена!")
                 output_format = st.selectbox("📥 Формат вывода", ["csv", "txt"], key="output_format_text")
                 if output_format == "csv":
@@ -578,7 +566,7 @@ with tabs[1]:
                                                          max_tokens=max_tokens_translate, temperature=temperature_translate,
                                                          top_p=top_p_translate, min_p=min_p_translate, top_k=top_k_translate,
                                                          presence_penalty=presence_penalty_translate, frequency_penalty=frequency_penalty_translate,
-                                                         repetition_penalty=repetition_penalty_translate, max_token_limit=MAX_CONTEXT)
+                                                         repetition_penalty=repetition_penalty_translate)
                 st.success("✅ Перевод завершен!")
                 if translate_output_format == "csv":
                     csv_translated = df_translated.to_csv(index=False).encode("utf-8")
@@ -668,3 +656,4 @@ Explicit Anal Encounter: Hot Mess with Justin Brody & Boomer Banks from Cocky Bo
                 st.download_button("📥 Скачать очищенный файл (TXT)", data=cleaned_content.encode("utf-8"), file_name="cleaned_result.txt", mime="text/plain")
             except Exception as e:
                 st.error(f"Ошибка при обработке TXT: {e}")
+
