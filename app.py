@@ -13,7 +13,7 @@ import redis
 from dotenv import load_dotenv
 import os
 
-# Настройка страницы должна быть первым вызовом Streamlit!
+# Настройка страницы должна быть выполнена первым вызовом Streamlit!
 st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
 
 # Загружаем переменные окружения из файла .env
@@ -31,19 +31,17 @@ redis_conn = redis.Redis(
     port=UPSTASH_PORT,
     password=UPSTASH_PASSWORD,
     ssl=True,
-    decode_responses=True
+    decode_responses=True  # чтобы получать строки, а не байты
 )
-
-# ... остальной код приложения ...
-
 
 #######################################
 # 1) ГЛОБАЛЬНОЕ ЛОГИРОВАНИЕ ОШИБОК
 #######################################
 error_logs_lock = threading.Lock()
-error_logs = []
+error_logs = []  # локальный список ошибок
 
 def log_error(message: str):
+    """Записывает сообщение об ошибке с отметкой времени локально и в Redis."""
     with error_logs_lock:
         timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
         log_message = f"{timestamp} - {message}"
@@ -55,6 +53,10 @@ def log_error(message: str):
 # 2) ФУНКЦИИ ДЛЯ ОБНОВЛЕНИЯ ПРОГРЕССА ЗАДАЧИ
 #######################################
 def update_job_progress(job_id: str, progress: int):
+    """
+    Сохраняет текущий прогресс задачи (в процентах) в Redis под ключом job:{job_id}:progress.
+    Если возникает ошибка, прогресс сохраняется локально в st.session_state.
+    """
     try:
         redis_conn.set(f"job:{job_id}:progress", progress)
     except Exception as e:
@@ -62,6 +64,7 @@ def update_job_progress(job_id: str, progress: int):
         st.session_state["last_progress"] = progress
 
 def get_job_progress(job_id: str) -> int:
+    """Извлекает прогресс задачи из Redis. Если значение отсутствует, возвращает 0."""
     progress = redis_conn.get(f"job:{job_id}:progress")
     return int(progress) if progress is not None else 0
 
@@ -73,8 +76,6 @@ LIST_MODELS_ENDPOINT = f"{API_BASE_URL}/models"
 CHAT_COMPLETIONS_ENDPOINT = f"{API_BASE_URL}/chat/completions"
 DEFAULT_API_KEY = os.getenv("DEFAULT_API_KEY")
 MAX_RETRIES = 3
-
-st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
 
 #######################################
 # 4) ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -866,4 +867,3 @@ with tabs[2]:
     result_csv = redis_conn.get(f"job:{job_id}:result_csv")
     if result_csv:
         st.download_button("📥 Скачать результат обработки (CSV)", data=result_csv.encode("utf-8"), file_name="result_from_redis.csv", mime="text/csv")
-
