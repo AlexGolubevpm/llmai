@@ -60,8 +60,9 @@ def custom_postprocess_text(text: str) -> str:
         text = re.sub(r'\s*Note:.*', '', text, flags=re.IGNORECASE)
 
         # 2. Удаляем нежелательные слова в начале любого предложения.
-        pattern_sentence = re.compile(r'(^|(?<=[.!?]\s))\s*(?:fucking|explicit|intense)[\s,:\-]+', flags=re.IGNORECASE)
+        pattern_sentence = re.compile(r'(^|(?<=[.!?]\s))\s*(?:fucking|explicit|intense)\b[\s,:\-]*', flags=re.IGNORECASE)
         text = pattern_sentence.sub(r'\1', text)
+
 
         # 3. Заменяем цензурированное слово
         text = re.sub(r'\bF\*+\b', 'fuck', text, flags=re.IGNORECASE)
