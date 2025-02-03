@@ -11,6 +11,20 @@ import uuid
 import redis
 from dotenv import load_dotenv
 import os
+import streamlit_cookies_manager as stcm  # Импорт библиотеки для работы с cookie
+import uuid
+
+# Если job_id уже есть в сессии, ничего не делаем.
+if "job_id" not in st.session_state:
+    # Инициализируем менеджер cookie
+    cookies = stcm.Cookies()
+    # Пытаемся получить job_id из cookie
+    job_id_cookie = cookies.get("job_id")
+    if job_id_cookie is None:
+        # Если cookie отсутствует, генерируем новый job_id
+        st.session_state.job_id = str(uuid.uuid4())
+        cookies["job_id"] = st.session_state.job_id
+        cookies.save()  # Сохраняем cookie
 
 # Загружаем переменные из файла .env
 load_dotenv()
