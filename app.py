@@ -508,13 +508,16 @@ st.title("🧠 Novita AI Batch Processor")
 st.sidebar.header("🔑 Настройки API")
 api_key = st.sidebar.text_input("API Key", value=DEFAULT_API_KEY, type="password")
 
-# --- Save job_id via URL parameters using st.query_params and st.set_query_params ---
+# --- Save job_id via URL parameters using st.query_params (getter) and a setter ---
 query_params = st.query_params
 if "job_id" in query_params and query_params["job_id"]:
     st.session_state.job_id = query_params["job_id"][0]
 else:
     st.session_state.job_id = str(uuid.uuid4())
-    st.set_query_params(job_id=st.session_state.job_id)
+    try:
+        st.set_query_params(job_id=st.session_state.job_id)
+    except AttributeError:
+        st.experimental_set_query_params(job_id=st.session_state.job_id)
 # --- End job_id saving ---
 
 tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста", "📋 Логи и Статус"])
@@ -837,10 +840,10 @@ with tabs[1]:
                 st.success("✅ Перевод завершен!")
                 if translate_output_format == "csv":
                     csv_translated = df_translated.to_csv(index=False).encode("utf-8")
-                    st.download_button("📥 Скачать переведенный файл (CSV)", data=csv_translated, file_name="translated_result.csv", mime="text/csv")
+                    st.download_button("📥 Скачать результат (CSV)", data=csv_translated, file_name="translated_result.csv", mime="text/csv")
                 else:
                     txt_translated = df_translated.to_csv(index=False, sep="|", header=False).encode("utf-8")
-                    st.download_button("📥 Скачать переведенный файл (TXT)", data=txt_translated, file_name="translated_result.txt", mime="text/plain")
+                    st.download_button("📥 Скачать результат (TXT)", data=txt_translated, file_name="translated_result.txt", mime="text/plain")
                 st.write("### 📊 Логи")
                 st.write(f"✅ Перевод завершен, строк переведено: {len(df_translated)}")
 
@@ -863,4 +866,3 @@ with tabs[2]:
     result_csv = redis_conn.get(f"job:{job_id}:result_csv")
     if result_csv:
         st.download_button("📥 Скачать результат обработки (CSV)", data=result_csv.encode("utf-8"), file_name="result_from_redis.csv", mime="text/csv")
-
