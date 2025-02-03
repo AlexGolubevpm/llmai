@@ -23,23 +23,21 @@ UPSTASH_HOST = os.getenv("UPSTASH_REDIS_HOST")
 UPSTASH_PORT = int(os.getenv("UPSTASH_REDIS_PORT", 6379))
 UPSTASH_PASSWORD = os.getenv("UPSTASH_REDIS_PASSWORD")
 
-# Подключаемся к Upstash Redis
 redis_conn = redis.Redis(
     host=UPSTASH_HOST,
     port=UPSTASH_PORT,
     password=UPSTASH_PASSWORD,
     ssl=True,
-    decode_responses=True  # чтобы получать строки, а не байты
+    decode_responses=True
 )
 
 #######################################
 # 1) ГЛОБАЛЬНОЕ ЛОГИРОВАНИЕ ОШИБОК
 #######################################
 error_logs_lock = threading.Lock()
-error_logs = []  # локальный список ошибок
+error_logs = []
 
 def log_error(message: str):
-    """Записывает сообщение об ошибке с отметкой времени локально и в Redis."""
     with error_logs_lock:
         timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
         log_message = f"{timestamp} - {message}"
@@ -51,18 +49,13 @@ def log_error(message: str):
 # 2) ФУНКЦИИ ДЛЯ ОБНОВЛЕНИЯ ПРОГРЕССА ЗАДАЧИ
 #######################################
 def update_job_progress(job_id: str, progress: int):
-    """
-    Сохраняет текущий прогресс задачи (в процентах) в Redis под ключом job:{job_id}:progress.
-    Если возникает ошибка, прогресс сохраняется локально в st.session_state.
-    """
     try:
         redis_conn.set(f"job:{job_id}:progress", progress)
     except Exception as e:
         log_error(f"Ошибка обновления прогресса для {job_id}: {e}")
-        st.session_state.last_progress = progress
+        st.session_state["last_progress"] = progress
 
 def get_job_progress(job_id: str) -> int:
-    """Извлекает прогресс задачи из Redis. Если значение отсутствует, возвращает 0."""
     progress = redis_conn.get(f"job:{job_id}:progress")
     return int(progress) if progress is not None else 0
 
@@ -298,7 +291,6 @@ def process_file(
     redis_conn.set(f"job:{job_id}:result_csv", df_out.to_csv(index=False))
     return df_out
 
-# Functions for translation (similar structure)
 def translate_completion_request(
     api_key: str,
     messages: list,
@@ -510,16 +502,16 @@ st.sidebar.header("🔑 Настройки API")
 api_key = st.sidebar.text_input("API Key", value=DEFAULT_API_KEY, type="password")
 
 # --- Сохранение job_id с использованием Cookies ---
-import streamlit_cookies_manager as stcm  # если еще не импортировано
-cookies = stcm.Cookies()
 if "job_id" not in st.session_state:
-    if cookies.get("job_id") is not None:
-        st.session_state.job_id = cookies.get("job_id")
-    else:
-        st.session_state.job_id = str(uuid.uuid4())
-        cookies["job_id"] = st.session_state.job_id
+    cookies = stcm.Cookies()
+    job_id_cookie = cookies.get("job_id")
+    if job_id_cookie is None:
+        st.session_state["job_id"] = str(uuid.uuid4())
+        cookies["job_id"] = st.session_state["job_id"]
         cookies.save()
-st.write(f"Используемый job_id: {st.session_state.job_id}")
+    else:
+        st.session_state["job_id"] = job_id_cookie
+st.write(f"Используемый job_id: {st.session_state['job_id']}")
 # --- Конец блока job_id ---
 
 tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста", "📋 Логи и Статус"])
@@ -682,7 +674,7 @@ with tabs[0]:
                     presence_penalty=presence_penalty_text,
                     frequency_penalty=frequency_penalty_text,
                     repetition_penalty=repetition_penalty_text,
-                    job_id=st.session_state.job_id,
+                    job_id=st.session_state["job_id"],
                     chunk_size=10,
                     max_workers=max_workers_text
                 )
@@ -835,7 +827,7 @@ with tabs[1]:
                     presence_penalty=presence_penalty_translate,
                     frequency_penalty=frequency_penalty_translate,
                     repetition_penalty=repetition_penalty_translate,
-                    job_id=st.session_state.job_id,
+                    job_id=st.session_state["job_id"],
                     chunk_size=10,
                     max_workers=max_workers_translate
                 )
@@ -860,7 +852,7 @@ with tabs[2]:
     st.text_area("Логи ошибок (локальные)", local_logs, height=200)
     
     st.subheader("Статус задачи")
-    job_id = st.session_state.job_id
+    job_id = st.session_state["job_id"]
     progress = get_job_progress(job_id)
     st.write(f"ID задачи: {job_id}")
     st.progress(progress)
