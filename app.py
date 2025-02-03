@@ -43,7 +43,6 @@ def log_error(message: str):
         timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
         log_message = f"{timestamp} - {message}"
         error_logs.append(log_message)
-        # Сохраняем в Redis: добавляем в список 'error_logs'
         redis_conn.rpush("error_logs", log_message)
     print(log_message)
 
@@ -51,8 +50,15 @@ def log_error(message: str):
 # 2) ФУНКЦИИ ДЛЯ ОБНОВЛЕНИЯ ПРОГРЕССА ЗАДАЧИ
 #######################################
 def update_job_progress(job_id: str, progress: int):
-    """Сохраняет текущий прогресс задачи (в процентах) в Redis по ключу job:{job_id}:progress"""
-    redis_conn.set(f"job:{job_id}:progress", progress)
+    """
+    Сохраняет текущий прогресс задачи (в процентах) в Redis по ключу job:{job_id}:progress.
+    При ошибке обновления также сохраняет значение локально в st.session_state.
+    """
+    try:
+        redis_conn.set(f"job:{job_id}:progress", progress)
+    except Exception as e:
+        log_error(f"Ошибка обновления прогресса для {job_id}: {e}")
+        st.session_state.last_progress = progress
 
 def get_job_progress(job_id: str) -> int:
     """Извлекает прогресс задачи из Redis. Если значение не найдено, возвращает 0."""
@@ -62,15 +68,10 @@ def get_job_progress(job_id: str) -> int:
 #######################################
 # 3) НАСТРОЙКИ ПРИЛОЖЕНИЯ
 #######################################
-# Базовый URL API Novita
 API_BASE_URL = "https://api.novita.ai/v3/openai"
 LIST_MODELS_ENDPOINT = f"{API_BASE_URL}/models"
 CHAT_COMPLETIONS_ENDPOINT = f"{API_BASE_URL}/chat/completions"
-
-# Значение по умолчанию берём из переменных окружения (.env)
 DEFAULT_API_KEY = os.getenv("DEFAULT_API_KEY")
-
-# Максимальное число повторных попыток при 429 (Rate Limit)
 MAX_RETRIES = 3
 
 st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
@@ -79,14 +80,6 @@ st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
 # 4) ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 #######################################
 def custom_postprocess_text(text: str) -> str:
-    """
-    Функция постобработки текста:
-      1. Удаляет фрагменты, начинающиеся с "Note:".
-      2. Удаляет нежелательные слова ("fucking", "explicit", "intense") в начале предложения.
-      3. Заменяет цензурированное "F***" на "fuck".
-      4. Удаляет китайские символы и эмодзи.
-      5. Убирает двойные кавычки и лишние пробелы.
-    """
     try:
         text = re.sub(r'\s*Note:.*', '', text, flags=re.IGNORECASE)
         pattern_sentence = re.compile(r'(^|(?<=[.!?]\s))\s*(?:fucking|explicit|intense)[\s,:\-]+', flags=re.IGNORECASE)
@@ -107,7 +100,6 @@ def custom_postprocess_text(text: str) -> str:
     return text
 
 def get_model_list(api_key: str):
-    """Получает список моделей через API Novita AI."""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
@@ -142,7 +134,6 @@ def chat_completion_request(
     frequency_penalty: float,
     repetition_penalty: float
 ):
-    """Отправляет запрос на чат-комплишен с обработкой ошибок и таймаутом."""
     payload = {
         "model": model,
         "messages": messages,
@@ -196,7 +187,6 @@ def process_single_row(
     frequency_penalty: float,
     repetition_penalty: float
 ):
-    """Обрабатывает одну строку (для обработки текста)."""
     try:
         messages = [
             {"role": "system", "content": system_prompt},
@@ -241,7 +231,6 @@ def process_file(
     chunk_size: int = 10,
     max_workers: int = 5
 ):
-    """Параллельная обработка файла построчно с обновлением прогресса в Redis."""
     progress_bar = st.progress(0)
     time_placeholder = st.empty()
     results = []
@@ -305,11 +294,10 @@ def process_file(
     elapsed = time.time() - start_time
     time_placeholder.success(f"Обработка завершена за {elapsed:.1f} секунд.")
     update_job_progress(job_id, 100)
-    # Сохраняем итоговую таблицу в Redis (например, в формате CSV)
     redis_conn.set(f"job:{job_id}:result_csv", df_out.to_csv(index=False))
     return df_out
 
-# Функции для перевода (аналогичные, с обновлением прогресса)
+# Функции для перевода (аналогичные)
 def translate_completion_request(
     api_key: str,
     messages: list,
@@ -517,15 +505,18 @@ PRESETS = {
 #######################################
 st.title("🧠 Novita AI Batch Processor")
 
-# Ввод API Key (используется во всех вкладках)
 st.sidebar.header("🔑 Настройки API")
 api_key = st.sidebar.text_input("API Key", value=DEFAULT_API_KEY, type="password")
 
-# Генерация уникального идентификатора задачи (job_id) для сохранения прогресса
-if "job_id" not in st.session_state:
+# --- Сохранение job_id через URL-параметры ---
+query_params = st.experimental_get_query_params()
+if "job_id" in query_params and query_params["job_id"]:
+    st.session_state.job_id = query_params["job_id"][0]
+else:
     st.session_state.job_id = str(uuid.uuid4())
+    st.experimental_set_query_params(job_id=st.session_state.job_id)
+# --- Конец изменений по сохранению job_id ---
 
-# Создаём вкладки для разделения функционала: обработка текста, перевод и логи/статус
 tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста", "📋 Логи и Статус"])
 
 ########################################
@@ -869,8 +860,6 @@ with tabs[2]:
     st.write(f"ID задачи: {job_id}")
     st.progress(progress)
     st.write(f"Прогресс: {progress}%")
-    # Если результат уже сохранён в Redis, даём возможность его скачать
     result_csv = redis_conn.get(f"job:{job_id}:result_csv")
     if result_csv:
         st.download_button("📥 Скачать результат обработки (CSV)", data=result_csv.encode("utf-8"), file_name="result_from_redis.csv", mime="text/csv")
-
