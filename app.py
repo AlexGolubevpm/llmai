@@ -39,16 +39,11 @@ def custom_postprocess_text(text: str) -> str:
     5. Удаляет эмодзи.
     6. Убирает все двойные кавычки и лишние пробелы.
     """
-    # 1. Удаляем любые фрагменты, начинающиеся с "Note:"
     text = re.sub(r'\s*Note:.*', '', text, flags=re.IGNORECASE)
-    # 2. Удаляем нежелательные слова в начале предложения.
     pattern_sentence = re.compile(r'(^|(?<=[.!?]\s))\s*(?:fucking|explicit|intense)[\s,:\-]+', flags=re.IGNORECASE)
     text = pattern_sentence.sub(r'\1', text)
-    # 3. Заменяем "F***" на "fuck"
     text = re.sub(r'\bF\*+\b', 'fuck', text, flags=re.IGNORECASE)
-    # 4. Удаляем китайские символы
     text = re.sub(r'[\u4e00-\u9fff]+', '', text)
-    # 5. Удаляем эмодзи
     emoji_pattern = re.compile("["
                                u"\U0001F600-\U0001F64F"
                                u"\U0001F300-\U0001F5FF"
@@ -56,7 +51,6 @@ def custom_postprocess_text(text: str) -> str:
                                u"\U0001F1E0-\U0001F1FF"
                                "]+", flags=re.UNICODE)
     text = emoji_pattern.sub(r'', text)
-    # 6. Убираем двойные кавычки и лишние пробелы
     text = text.replace('"', '')
     text = re.sub(r'\s+', ' ', text).strip()
     return text
@@ -182,13 +176,16 @@ def process_file(
     chunk_size: int = 10,
     max_workers: int = 5
 ):
-    """Параллельная обработка файла построчно без логирования."""
+    """Параллельная обработка файла построчно с использованием чанков и отображением прогресс-бара."""
     results = []
     total_rows = len(df)
+    progress_bar = st.progress(0)
+    
     for start_idx in range(0, total_rows, chunk_size):
         end_idx = min(start_idx + chunk_size, total_rows)
         chunk_indices = list(df.index[start_idx:end_idx])
         chunk_results = [None] * len(chunk_indices)
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_i = {}
             for i, row_idx in enumerate(chunk_indices):
@@ -213,12 +210,15 @@ def process_file(
             for future in concurrent.futures.as_completed(future_to_i):
                 i = future_to_i[future]
                 chunk_results[i] = future.result()
+        
         results.extend(chunk_results)
+        progress_bar.progress(min((start_idx + len(chunk_results)) / total_rows, 1.0))
+    
     df_out = df.copy()
     df_out["rewrite"] = results
     return df_out
 
-# --- Функции для перевода (аналогичны обработке текста, логика без логирования) ---
+# --- Функции для перевода (аналогичны обработке текста, с прогресс-баром) ---
 
 def translate_completion_request(
     api_key: str,
@@ -301,12 +301,16 @@ def process_translation_file(
     chunk_size: int = 10,
     max_workers: int = 5
 ):
+    """Параллельная обработка файла для перевода с использованием чанков и отображением прогресс-бара."""
     results = []
     total_rows = len(df)
+    progress_bar = st.progress(0)
+    
     for start_idx in range(0, total_rows, chunk_size):
         end_idx = min(start_idx + chunk_size, total_rows)
         chunk_indices = list(df.index[start_idx:end_idx])
         chunk_results = [None] * len(chunk_indices)
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_i = {}
             for i, row_idx in enumerate(chunk_indices):
@@ -331,18 +335,20 @@ def process_translation_file(
             for future in concurrent.futures.as_completed(future_to_i):
                 i = future_to_i[future]
                 chunk_results[i] = future.result()
+        
         results.extend(chunk_results)
+        progress_bar.progress(min((start_idx + len(chunk_results)) / total_rows, 1.0))
+    
     df_out = df.copy()
     df_out["translated_title"] = results
     return df_out
 
-# --- Новая функция для постобработки файла с удалением вредных паттернов ---
+# --- Функция для постобработки файла с удалением вредных паттернов ---
 def clean_text(text: str, harmful_patterns: list) -> str:
     """
     Для каждого паттерна из списка удаляет его вхождения из текста.
     """
     for pattern in harmful_patterns:
-        # Экранируем спецсимволы, чтобы искать буквальное совпадение (без учета регистра)
         text = re.sub(re.escape(pattern), "", text, flags=re.IGNORECASE)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
@@ -795,11 +801,9 @@ Explicit Anal Encounter: Hot Mess with Justin Brody & Boomer Banks from Cocky Bo
                 content_post = uploaded_file_post.read().decode("utf-8")
                 lines_post = content_post.splitlines()
                 st.write(f"Загружено строк: {len(lines_post)}")
-                # Очищаем каждую строку по заданным паттернам
                 cleaned_lines = [clean_text(line, harmful_patterns) for line in lines_post]
                 cleaned_content = "\n".join(cleaned_lines)
                 st.text_area("Предпросмотр очищенного текста", value=cleaned_content[:1000], height=200)
                 st.download_button("📥 Скачать очищенный файл (TXT)", data=cleaned_content.encode("utf-8"), file_name="cleaned_result.txt", mime="text/plain")
             except Exception as e:
                 st.error(f"Ошибка при обработке TXT: {e}")
-
