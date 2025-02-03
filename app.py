@@ -5,8 +5,37 @@ import json
 import pandas as pd
 import time
 import concurrent.futures
-import re
 import threading
+import re
+
+# Шаблон:
+# ^                — начало строки
+# (?:              — не запоминающая группа, содержащая два варианта:
+#    Explicit Encounter |   — либо фраза "Explicit Encounter"
+#    Intense Anal [^:]+     — либо фраза, начинающаяся с "Intense Anal " и любые символы кроме двоеточия
+# )
+# :\s*             — далее двоеточие и возможные пробелы
+pattern_prefix = re.compile(r'^(?:Explicit Encounter|Intense Anal [^:]+):\s*', flags=re.IGNORECASE)
+
+def remove_prefix(text: str) -> str:
+    """
+    Удаляет префиксы вида "Explicit Encounter:" или "Intense Anal ...:" из начала строки.
+    """
+    return pattern_prefix.sub('', text)
+
+# Пример использования:
+texts = [
+    "Explicit Encounter: Dakota Payne and Isaac X Go Straight to Anal in Next Door Homemade Sex Tape",
+    "Explicit Encounter: Dorky Colby Chambers and Ian Levine in a Dirty Fuck Session",
+    "Intense Anal Session: Twinks Johan Koco and Steve Maxx Get Taught in HD",
+    "Intense Anal Session: Gabriel Cross and Diego Lauzen's Powerful Encounter - Hot Men of UK",
+    "Intense Anal Ride: Vincent O'Reilly and Shane Cook Heat Up in Nextdoor Buddies",
+    "Intense Anal Heat: Lawson Kane and Bryce Star Ignite in Raging Stallion's Latest Release"
+]
+
+for t in texts:
+    print(remove_prefix(t))
+
 
 #######################################
 # 0) Глобальное логирование ошибок
