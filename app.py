@@ -12,33 +12,33 @@ import redis
 from dotenv import load_dotenv
 import os
 
-# Load variables from .env
+# Загружаем переменные из файла .env
 load_dotenv()
 
 #######################################
-# 0) UPSTASH REDIS SETTINGS via .env
+# 0) НАСТРОЙКИ UPSTASH REDIS через .env
 #######################################
 UPSTASH_HOST = os.getenv("UPSTASH_REDIS_HOST")
 UPSTASH_PORT = int(os.getenv("UPSTASH_REDIS_PORT", 6379))
 UPSTASH_PASSWORD = os.getenv("UPSTASH_REDIS_PASSWORD")
 
-# Connect to Upstash Redis
+# Подключаемся к Upstash Redis
 redis_conn = redis.Redis(
     host=UPSTASH_HOST,
     port=UPSTASH_PORT,
     password=UPSTASH_PASSWORD,
     ssl=True,
-    decode_responses=True  # so that we get strings instead of bytes
+    decode_responses=True  # чтобы получать строки, а не байты
 )
 
 #######################################
-# 1) GLOBAL ERROR LOGGING
+# 1) ГЛОБАЛЬНОЕ ЛОГИРОВАНИЕ ОШИБОК
 #######################################
 error_logs_lock = threading.Lock()
-error_logs = []  # local error list
+error_logs = []  # локальный список ошибок
 
 def log_error(message: str):
-    """Logs an error with a timestamp both locally and in Redis."""
+    """Записывает сообщение об ошибке с отметкой времени локально и в Redis."""
     with error_logs_lock:
         timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
         log_message = f"{timestamp} - {message}"
@@ -47,12 +47,12 @@ def log_error(message: str):
     print(log_message)
 
 #######################################
-# 2) FUNCTIONS FOR UPDATING TASK PROGRESS
+# 2) ФУНКЦИИ ДЛЯ ОБНОВЛЕНИЯ ПРОГРЕССА ЗАДАЧИ
 #######################################
 def update_job_progress(job_id: str, progress: int):
     """
-    Saves the current progress (as a percentage) to Redis under the key job:{job_id}:progress.
-    If an error occurs during the update, the progress is also saved locally in st.session_state.
+    Сохраняет текущий прогресс задачи (в процентах) в Redis под ключом job:{job_id}:progress.
+    Если возникает ошибка, прогресс сохраняется локально в st.session_state.
     """
     try:
         redis_conn.set(f"job:{job_id}:progress", progress)
@@ -61,12 +61,12 @@ def update_job_progress(job_id: str, progress: int):
         st.session_state.last_progress = progress
 
 def get_job_progress(job_id: str) -> int:
-    """Retrieves the progress from Redis. Returns 0 if not found."""
+    """Извлекает прогресс задачи из Redis. Если значение отсутствует, возвращает 0."""
     progress = redis_conn.get(f"job:{job_id}:progress")
     return int(progress) if progress is not None else 0
 
 #######################################
-# 3) APPLICATION SETTINGS
+# 3) НАСТРОЙКИ ПРИЛОЖЕНИЯ
 #######################################
 API_BASE_URL = "https://api.novita.ai/v3/openai"
 LIST_MODELS_ENDPOINT = f"{API_BASE_URL}/models"
@@ -77,7 +77,7 @@ MAX_RETRIES = 3
 st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
 
 #######################################
-# 4) HELPER FUNCTIONS
+# 4) ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 #######################################
 def custom_postprocess_text(text: str) -> str:
     try:
@@ -508,14 +508,15 @@ st.title("🧠 Novita AI Batch Processor")
 st.sidebar.header("🔑 Настройки API")
 api_key = st.sidebar.text_input("API Key", value=DEFAULT_API_KEY, type="password")
 
-# --- Save job_id: we read from query parameters only, without updating URL ---
+# --- Работа с job_id: только считываем его из query-параметров, без обновления URL ---
 if "job_id" not in st.session_state:
     query_params = st.experimental_get_query_params()
     if "job_id" in query_params and query_params["job_id"]:
         st.session_state.job_id = query_params["job_id"][0]
     else:
         st.session_state.job_id = str(uuid.uuid4())
-# --- End job_id saving ---
+        st.write(f"Сгенерирован новый job_id: {st.session_state.job_id}")
+# --- Конец блока job_id ---
 
 tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста", "📋 Логи и Статус"])
 
