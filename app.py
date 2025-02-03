@@ -508,16 +508,20 @@ st.title("🧠 Novita AI Batch Processor")
 st.sidebar.header("🔑 Настройки API")
 api_key = st.sidebar.text_input("API Key", value=DEFAULT_API_KEY, type="password")
 
-# --- Save job_id via URL parameters using st.query_params (getter) and a setter ---
-query_params = st.query_params
-if "job_id" in query_params and query_params["job_id"]:
-    st.session_state.job_id = query_params["job_id"][0]
-else:
-    st.session_state.job_id = str(uuid.uuid4())
+# --- Save job_id via URL parameters using a consistent API ---
+if "job_id" not in st.session_state:
     try:
-        st.set_query_params(job_id=st.session_state.job_id)
-    except AttributeError:
-        st.experimental_set_query_params(job_id=st.session_state.job_id)
+        query_params = st.query_params  # new getter as property
+    except Exception:
+        query_params = st.experimental_get_query_params()
+    if "job_id" in query_params and query_params["job_id"]:
+        st.session_state.job_id = query_params["job_id"][0]
+    else:
+        st.session_state.job_id = str(uuid.uuid4())
+        try:
+            st.set_query_params(job_id=st.session_state.job_id)
+        except Exception:
+            st.experimental_set_query_params(job_id=st.session_state.job_id)
 # --- End job_id saving ---
 
 tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста", "📋 Логи и Статус"])
