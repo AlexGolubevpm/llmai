@@ -12,33 +12,33 @@ import redis
 from dotenv import load_dotenv
 import os
 
-# Загружаем переменные из файла .env
+# Load variables from .env
 load_dotenv()
 
 #######################################
-# 0) НАСТРОЙКИ UPSTASH REDIS через .env
+# 0) UPSTASH REDIS SETTINGS via .env
 #######################################
 UPSTASH_HOST = os.getenv("UPSTASH_REDIS_HOST")
 UPSTASH_PORT = int(os.getenv("UPSTASH_REDIS_PORT", 6379))
 UPSTASH_PASSWORD = os.getenv("UPSTASH_REDIS_PASSWORD")
 
-# Подключаемся к Upstash Redis
+# Connect to Upstash Redis
 redis_conn = redis.Redis(
     host=UPSTASH_HOST,
     port=UPSTASH_PORT,
     password=UPSTASH_PASSWORD,
     ssl=True,
-    decode_responses=True  # чтобы получать строки, а не байты
+    decode_responses=True  # so that we get strings instead of bytes
 )
 
 #######################################
-# 1) ГЛОБАЛЬНОЕ ЛОГИРОВАНИЕ ОШИБОК
+# 1) GLOBAL ERROR LOGGING
 #######################################
 error_logs_lock = threading.Lock()
-error_logs = []  # локальный список ошибок
+error_logs = []  # local error list
 
 def log_error(message: str):
-    """Добавляет сообщение об ошибке с отметкой времени в локальный список и сохраняет в Redis."""
+    """Logs an error with a timestamp both locally and in Redis."""
     with error_logs_lock:
         timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
         log_message = f"{timestamp} - {message}"
@@ -47,12 +47,12 @@ def log_error(message: str):
     print(log_message)
 
 #######################################
-# 2) ФУНКЦИИ ДЛЯ ОБНОВЛЕНИЯ ПРОГРЕССА ЗАДАЧИ
+# 2) FUNCTIONS FOR UPDATING TASK PROGRESS
 #######################################
 def update_job_progress(job_id: str, progress: int):
     """
-    Сохраняет текущий прогресс задачи (в процентах) в Redis по ключу job:{job_id}:progress.
-    При ошибке обновления также сохраняет значение локально в st.session_state.
+    Saves the current progress (as a percentage) to Redis under the key job:{job_id}:progress.
+    If an error occurs during the update, the progress is also saved locally in st.session_state.
     """
     try:
         redis_conn.set(f"job:{job_id}:progress", progress)
@@ -61,12 +61,12 @@ def update_job_progress(job_id: str, progress: int):
         st.session_state.last_progress = progress
 
 def get_job_progress(job_id: str) -> int:
-    """Извлекает прогресс задачи из Redis. Если значение не найдено, возвращает 0."""
+    """Retrieves the progress from Redis. Returns 0 if not found."""
     progress = redis_conn.get(f"job:{job_id}:progress")
     return int(progress) if progress is not None else 0
 
 #######################################
-# 3) НАСТРОЙКИ ПРИЛОЖЕНИЯ
+# 3) APPLICATION SETTINGS
 #######################################
 API_BASE_URL = "https://api.novita.ai/v3/openai"
 LIST_MODELS_ENDPOINT = f"{API_BASE_URL}/models"
@@ -77,7 +77,7 @@ MAX_RETRIES = 3
 st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
 
 #######################################
-# 4) ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# 4) HELPER FUNCTIONS
 #######################################
 def custom_postprocess_text(text: str) -> str:
     try:
@@ -297,7 +297,7 @@ def process_file(
     redis_conn.set(f"job:{job_id}:result_csv", df_out.to_csv(index=False))
     return df_out
 
-# Функции для перевода (аналогичные)
+# Functions for translation (similar structure)
 def translate_completion_request(
     api_key: str,
     messages: list,
@@ -451,7 +451,7 @@ def process_translation_file(
     return df_out
 
 #######################################
-# 5) ПРЕСЕТЫ МОДЕЛЕЙ
+# 5) MODEL PRESETS
 #######################################
 PRESETS = {
     "Default": {
@@ -501,26 +501,26 @@ PRESETS = {
 }
 
 #######################################
-# 6) ИНТЕРФЕЙС Streamlit
+# 6) STREAMLIT INTERFACE
 #######################################
 st.title("🧠 Novita AI Batch Processor")
 
 st.sidebar.header("🔑 Настройки API")
 api_key = st.sidebar.text_input("API Key", value=DEFAULT_API_KEY, type="password")
 
-# --- Сохранение job_id через URL-параметры ---
-query_params = st.experimental_get_query_params()
+# --- Save job_id via URL parameters using st.query_params and st.set_query_params ---
+query_params = st.query_params()
 if "job_id" in query_params and query_params["job_id"]:
     st.session_state.job_id = query_params["job_id"][0]
 else:
     st.session_state.job_id = str(uuid.uuid4())
-    st.experimental_set_query_params(job_id=st.session_state.job_id)
-# --- Конец изменений по сохранению job_id ---
+    st.set_query_params(job_id=st.session_state.job_id)
+# --- End job_id saving ---
 
 tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста", "📋 Логи и Статус"])
 
 ########################################
-# Вкладка 1: Обработка текста
+# Tab 1: Text Processing
 ########################################
 with tabs[0]:
     st.header("🔄 Обработка текста")
@@ -693,7 +693,7 @@ with tabs[0]:
                 st.write(f"✅ Обработка завершена, строк обработано: {len(df_out_text)}")
 
 ########################################
-# Вкладка 2: Перевод текста
+# Tab 2: Translation
 ########################################
 with tabs[1]:
     st.header("🌐 Перевод текста")
@@ -845,7 +845,7 @@ with tabs[1]:
                 st.write(f"✅ Перевод завершен, строк переведено: {len(df_translated)}")
 
 ########################################
-# Вкладка 3: Логи и статус задачи
+# Tab 3: Logs and Task Status
 ########################################
 with tabs[2]:
     st.header("📋 Логи и статус задачи")
