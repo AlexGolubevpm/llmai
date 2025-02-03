@@ -52,11 +52,7 @@ def custom_postprocess_text(text: str) -> str:
     return text
 
 def count_tokens(text: str) -> int:
-    """
-    Примерная оценка числа токенов.
-    Здесь используется простой подход: число токенов ~ число слов.
-    Для более точного подсчета можно использовать токенизатор модели.
-    """
+    """Простая оценка числа токенов (разбивка по пробелам)."""
     return len(text.split())
 
 def get_model_list(api_key: str):
@@ -123,29 +119,37 @@ def chat_completion_request(
             return f"Исключение: {e}"
     return "Ошибка: Превышено число попыток при 429 RATE_LIMIT."
 
-# Функция для обработки батча (нескольких тайтлов) в одном запросе.
-# Используем разделитель "\n---\n" между тайтлами.
+# Обновлённая функция process_batch с корректной обработкой количества результатов.
 def process_batch(api_key: str, model: str, system_prompt: str, user_prompt: str, batch_titles: list,
                   max_tokens: int, temperature: float, top_p: float, min_p: float,
                   top_k: int, presence_penalty: float, frequency_penalty: float, repetition_penalty: float) -> list:
-    combined_titles = "\n---\n".join(batch_titles)
+    """
+    Объединяет тайтлы батча через разделитель и отправляет один запрос.
+    Принимает, что API возвращает результаты, разделённые строкой "\n---\n".
+    Если число результатов не совпадает с числом отправленных тайтлов, недостающие заполняются пустыми строками.
+    """
+    separator = "\n---\n"
+    combined_titles = separator.join(batch_titles)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": f"{user_prompt}\n{combined_titles}"}
     ]
     response = chat_completion_request(api_key, messages, model, max_tokens, temperature, top_p,
                                          min_p, top_k, presence_penalty, frequency_penalty, repetition_penalty)
-    # Предполагаем, что ответ содержит результаты, разделённые тем же разделителем.
-    processed = response.split("\n---\n")
-    # Если число элементов не совпадает, можно вернуть весь ответ как один элемент или обработать иначе.
+    processed = response.split(separator)
     if len(processed) != len(batch_titles):
         st.warning("Количество результатов в батче не совпадает с количеством отправленных тайтлов.")
+        # Если результатов меньше, дополним пустыми строками
+        if len(processed) < len(batch_titles):
+            processed += [""] * (len(batch_titles) - len(processed))
+        else:
+            processed = processed[:len(batch_titles)]
     return processed
 
 def prepare_batch(system_prompt: str, user_prompt: str, titles: list, max_token_limit: int = 32000) -> list:
     """
     Собирает батч тайтлов так, чтобы общий объём токенов (system + user + тайтлы) не превышал max_token_limit.
-    Возвращает батч (список тайтлов) и оставшиеся тайтлы.
+    Возвращает батч (список тайтлов).
     """
     base_tokens = count_tokens(system_prompt) + count_tokens(user_prompt)
     batch = []
@@ -176,10 +180,10 @@ def process_file(
     max_token_limit: int = 32000
 ):
     """
-    Обработка файла батчами.
-    Для каждого батча собирается несколько тайтлов так, чтобы общий объём токенов не превышал max_token_limit.
-    Результаты (отдельные тайтлы) записываются в столбец "rewrite".
-    Также отображается прогресс-бар и примерное оставшееся время.
+    Обработка файла батчами:
+    - Составляет батчи тайтлов так, чтобы общий объём токенов не превышал max_token_limit.
+    - Обновляет прогресс-бар и показывает примерное оставшееся время.
+    - Результаты записываются в столбец "rewrite" DataFrame.
     """
     all_titles = df[title_col].astype(str).tolist()
     results = []
@@ -192,16 +196,13 @@ def process_file(
     while all_titles:
         batch = prepare_batch(system_prompt, user_prompt, all_titles, max_token_limit)
         batch_start = time.time()
-        # Обработка одного батча
         batch_result = process_batch(api_key, model, system_prompt, user_prompt, batch,
                                      max_tokens, temperature, top_p, min_p, top_k,
                                      presence_penalty, frequency_penalty, repetition_penalty)
         results.extend(batch_result)
         processed_count += len(batch)
-        # Удаляем обработанные тайтлы
         all_titles = all_titles[len(batch):]
         progress_bar.progress(min(processed_count / total_titles, 1.0))
-        # Расчет оставшегося времени для этого батча
         batch_time = time.time() - batch_start
         if len(batch) > 0:
             time_per_title = batch_time / len(batch)
@@ -216,10 +217,14 @@ def process_file(
     overall_time = time.time() - overall_start
     time_placeholder.success(f"Обработка завершена за {overall_time:.1f} сек.")
     df_out = df.copy()
-    df_out["rewrite"] = results
+    # Гарантируем, что длина списка результатов равна числу строк
+    if len(results) != len(df):
+        st.error("Ошибка: число обработанных результатов не соответствует количеству строк исходного файла.")
+    else:
+        df_out["rewrite"] = results
     return df_out
 
-# --- Функции для перевода (аналогичные, можно адаптировать батчевую обработку при необходимости) ---
+# --- Функции для перевода (аналогичные) ---
 
 def translate_completion_request(
     api_key: str,
@@ -292,10 +297,6 @@ def process_translation_file(
     repetition_penalty: float,
     max_token_limit: int = 32000
 ):
-    """
-    Обработка файла для перевода батчами с прогресс-баром и оценкой оставшегося времени.
-    Здесь для простоты реализации используется тот же батчевый принцип.
-    """
     all_titles = df[title_col].astype(str).tolist()
     results = []
     total_titles = len(all_titles)
@@ -328,10 +329,13 @@ def process_translation_file(
     overall_time = time.time() - overall_start
     time_placeholder.success(f"Перевод завершен за {overall_time:.1f} сек.")
     df_out = df.copy()
-    df_out["translated_title"] = results
+    if len(results) != len(df):
+        st.error("Ошибка: число обработанных результатов не соответствует количеству строк исходного файла.")
+    else:
+        df_out["translated_title"] = results
     return df_out
 
-# --- Функция для постобработки файла с удалением вредных паттернов ---
+# --- Функция для постобработки файла ---
 def clean_text(text: str, harmful_patterns: list) -> str:
     for pattern in harmful_patterns:
         text = re.sub(re.escape(pattern), "", text, flags=re.IGNORECASE)
@@ -404,7 +408,6 @@ st.title("🧠 Novita AI Batch Processor")
 st.sidebar.header("🔑 Настройки API")
 api_key = st.sidebar.text_input("API Key", value=DEFAULT_API_KEY, type="password")
 
-# Создаём 4 вкладки
 tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста", "📂 Разделение файла", "🧹 Постобработка"])
 
 ########################################
@@ -787,4 +790,5 @@ Explicit Anal Encounter: Hot Mess with Justin Brody & Boomer Banks from Cocky Bo
                 st.download_button("📥 Скачать очищенный файл (TXT)", data=cleaned_content.encode("utf-8"), file_name="cleaned_result.txt", mime="text/plain")
             except Exception as e:
                 st.error(f"Ошибка при обработке TXT: {e}")
+
 
