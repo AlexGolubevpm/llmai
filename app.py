@@ -1,6 +1,18 @@
 import streamlit as st
 import streamlit.components.v1 as components
-import streamlit_cookies_manager as stcm  # для работы с cookie
+from streamlit_cookies_manager import Cookies  # прямой импорт класса Cookies
+
+# Если job_id ещё не сохранён в session_state, пытаемся получить его из cookie.
+if "job_id" not in st.session_state:
+    cookies = Cookies()
+    job_id_cookie = cookies.get("job_id")
+    if job_id_cookie is None:
+        st.session_state["job_id"] = str(uuid.uuid4())
+        cookies["job_id"] = st.session_state["job_id"]
+        cookies.save()  # сохраняем cookie
+    else:
+        st.session_state["job_id"] = job_id_cookie
+st.write(f"Используемый job_id: {st.session_state['job_id']}")
 import requests
 import json
 import pandas as pd
