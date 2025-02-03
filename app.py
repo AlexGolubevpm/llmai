@@ -12,15 +12,11 @@ import math
 # 1) НАСТРОЙКИ ПРИЛОЖЕНИЯ
 #######################################
 
-# Базовый URL API Novita
 API_BASE_URL = "https://api.novita.ai/v3/openai"
 LIST_MODELS_ENDPOINT = f"{API_BASE_URL}/models"
 CHAT_COMPLETIONS_ENDPOINT = f"{API_BASE_URL}/chat/completions"
 
-# Ключ по умолчанию (НЕБЕЗОПАСНО в реальном проде)
 DEFAULT_API_KEY = "sk_MyidbhnT9jXzw-YDymhijjY8NF15O0Qy7C36etNTAxE"
-
-# Максимальное количество повторных попыток при 429 (Rate Limit)
 MAX_RETRIES = 3
 
 st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
@@ -31,32 +27,39 @@ st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
 
 def custom_postprocess_text(text: str) -> str:
     """
-    Функция постобработки текста:
+    Постобработка текста:
     1. Удаляет фрагменты, начинающиеся с "Note:".
-    2. Удаляет нежелательные слова "fucking", "explicit" и "intense", если они появляются в начале предложения.
-    3. Заменяет цензурированное "F***" на "fuck".
+    2. Удаляет нежелательные слова "fucking", "explicit", "intense" в начале предложения.
+    3. Заменяет "F***" на "fuck".
     4. Удаляет китайские символы.
     5. Удаляет эмодзи.
-    6. Убирает все двойные кавычки и лишние пробелы.
+    6. Убирает двойные кавычки и лишние пробелы.
     """
     text = re.sub(r'\s*Note:.*', '', text, flags=re.IGNORECASE)
     pattern_sentence = re.compile(r'(^|(?<=[.!?]\s))\s*(?:fucking|explicit|intense)[\s,:\-]+', flags=re.IGNORECASE)
     text = pattern_sentence.sub(r'\1', text)
     text = re.sub(r'\bF\*+\b', 'fuck', text, flags=re.IGNORECASE)
     text = re.sub(r'[\u4e00-\u9fff]+', '', text)
-    emoji_pattern = re.compile("["
-                               u"\U0001F600-\U0001F64F"
-                               u"\U0001F300-\U0001F5FF"
-                               u"\U0001F680-\U0001F6FF"
-                               u"\U0001F1E0-\U0001F1FF"
+    emoji_pattern = re.compile("[" 
+                               u"\U0001F600-\U0001F64F" 
+                               u"\U0001F300-\U0001F5FF" 
+                               u"\U0001F680-\U0001F6FF" 
+                               u"\U0001F1E0-\U0001F1FF" 
                                "]+", flags=re.UNICODE)
     text = emoji_pattern.sub(r'', text)
     text = text.replace('"', '')
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
+def count_tokens(text: str) -> int:
+    """
+    Примерная оценка числа токенов.
+    Здесь используется простой подход: число токенов ~ число слов.
+    Для более точного подсчета можно использовать токенизатор модели.
+    """
+    return len(text.split())
+
 def get_model_list(api_key: str):
-    """Загружаем список доступных моделей через API Novita AI"""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
@@ -87,7 +90,6 @@ def chat_completion_request(
     frequency_penalty: float,
     repetition_penalty: float
 ):
-    """Синхронный chat-комплишн с retries при 429."""
     payload = {
         "model": model,
         "messages": messages,
@@ -121,41 +123,39 @@ def chat_completion_request(
             return f"Исключение: {e}"
     return "Ошибка: Превышено число попыток при 429 RATE_LIMIT."
 
-def process_single_row(
-    api_key: str,
-    model: str,
-    system_prompt: str,
-    user_prompt: str,
-    row_text: str,
-    max_tokens: int,
-    temperature: float,
-    top_p: float,
-    min_p: float,
-    top_k: int,
-    presence_penalty: float,
-    frequency_penalty: float,
-    repetition_penalty: float
-):
-    """Обёртка для параллельного вызова генерации."""
+# Функция для обработки батча (нескольких тайтлов) в одном запросе.
+# Используем разделитель "\n---\n" между тайтлами.
+def process_batch(api_key: str, model: str, system_prompt: str, user_prompt: str, batch_titles: list,
+                  max_tokens: int, temperature: float, top_p: float, min_p: float,
+                  top_k: int, presence_penalty: float, frequency_penalty: float, repetition_penalty: float) -> list:
+    combined_titles = "\n---\n".join(batch_titles)
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"{user_prompt}\n{row_text}"}
+        {"role": "user", "content": f"{user_prompt}\n{combined_titles}"}
     ]
-    raw_response = chat_completion_request(
-        api_key,
-        messages,
-        model,
-        max_tokens,
-        temperature,
-        top_p,
-        min_p,
-        top_k,
-        presence_penalty,
-        frequency_penalty,
-        repetition_penalty
-    )
-    final_response = custom_postprocess_text(raw_response)
-    return final_response
+    response = chat_completion_request(api_key, messages, model, max_tokens, temperature, top_p,
+                                         min_p, top_k, presence_penalty, frequency_penalty, repetition_penalty)
+    # Предполагаем, что ответ содержит результаты, разделённые тем же разделителем.
+    processed = response.split("\n---\n")
+    # Если число элементов не совпадает, можно вернуть весь ответ как один элемент или обработать иначе.
+    if len(processed) != len(batch_titles):
+        st.warning("Количество результатов в батче не совпадает с количеством отправленных тайтлов.")
+    return processed
+
+def prepare_batch(system_prompt: str, user_prompt: str, titles: list, max_token_limit: int = 32000) -> list:
+    """
+    Собирает батч тайтлов так, чтобы общий объём токенов (system + user + тайтлы) не превышал max_token_limit.
+    Возвращает батч (список тайтлов) и оставшиеся тайтлы.
+    """
+    base_tokens = count_tokens(system_prompt) + count_tokens(user_prompt)
+    batch = []
+    for title in titles:
+        title_tokens = count_tokens(title)
+        if base_tokens + sum(count_tokens(t) for t in batch) + title_tokens <= max_token_limit:
+            batch.append(title)
+        else:
+            break
+    return batch
 
 def process_file(
     api_key: str,
@@ -173,61 +173,40 @@ def process_file(
     presence_penalty: float,
     frequency_penalty: float,
     repetition_penalty: float,
-    chunk_size: int = 10,
-    max_workers: int = 5
+    max_token_limit: int = 32000
 ):
     """
-    Параллельная обработка файла построчно с использованием чанков.
-    Отображается прогресс-бар и примерное оставшееся время.
+    Обработка файла батчами.
+    Для каждого батча собирается несколько тайтлов так, чтобы общий объём токенов не превышал max_token_limit.
+    Результаты (отдельные тайтлы) записываются в столбец "rewrite".
+    Также отображается прогресс-бар и примерное оставшееся время.
     """
+    all_titles = df[title_col].astype(str).tolist()
     results = []
-    total_rows = len(df)
+    total_titles = len(all_titles)
     progress_bar = st.progress(0)
-    time_placeholder = st.empty()  # для отображения оставшегося времени
+    time_placeholder = st.empty()
     overall_start = time.time()
-    rows_processed = 0
+    processed_count = 0
 
-    for start_idx in range(0, total_rows, chunk_size):
-        chunk_start = time.time()
-        end_idx = min(start_idx + chunk_size, total_rows)
-        chunk_indices = list(df.index[start_idx:end_idx])
-        chunk_results = [None] * len(chunk_indices)
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_i = {}
-            for i, row_idx in enumerate(chunk_indices):
-                row_text = str(df.loc[row_idx, title_col])
-                future = executor.submit(
-                    process_single_row,
-                    api_key,
-                    model,
-                    system_prompt,
-                    user_prompt,
-                    row_text,
-                    max_tokens,
-                    temperature,
-                    top_p,
-                    min_p,
-                    top_k,
-                    presence_penalty,
-                    frequency_penalty,
-                    repetition_penalty
-                )
-                future_to_i[future] = i
-            for future in concurrent.futures.as_completed(future_to_i):
-                i = future_to_i[future]
-                chunk_results[i] = future.result()
-
-        results.extend(chunk_results)
-        rows_processed += len(chunk_indices)
-        progress_bar.progress(min(rows_processed / total_rows, 1.0))
-
-        # Расчет оставшегося времени
-        chunk_time = time.time() - chunk_start
-        if len(chunk_indices) > 0:
-            time_per_row = chunk_time / len(chunk_indices)
-            rows_left = total_rows - rows_processed
-            est_time_sec = rows_left * time_per_row
+    while all_titles:
+        batch = prepare_batch(system_prompt, user_prompt, all_titles, max_token_limit)
+        batch_start = time.time()
+        # Обработка одного батча
+        batch_result = process_batch(api_key, model, system_prompt, user_prompt, batch,
+                                     max_tokens, temperature, top_p, min_p, top_k,
+                                     presence_penalty, frequency_penalty, repetition_penalty)
+        results.extend(batch_result)
+        processed_count += len(batch)
+        # Удаляем обработанные тайтлы
+        all_titles = all_titles[len(batch):]
+        progress_bar.progress(min(processed_count / total_titles, 1.0))
+        # Расчет оставшегося времени для этого батча
+        batch_time = time.time() - batch_start
+        if len(batch) > 0:
+            time_per_title = batch_time / len(batch)
+            titles_left = total_titles - processed_count
+            est_time_sec = titles_left * time_per_title
             if est_time_sec < 60:
                 time_text = f"~{est_time_sec:.1f} сек."
             else:
@@ -240,7 +219,7 @@ def process_file(
     df_out["rewrite"] = results
     return df_out
 
-# --- Функции для перевода (аналогичны обработке текста, с прогресс-баром) ---
+# --- Функции для перевода (аналогичные, можно адаптировать батчевую обработку при необходимости) ---
 
 def translate_completion_request(
     api_key: str,
@@ -256,17 +235,8 @@ def translate_completion_request(
     repetition_penalty: float
 ):
     raw_response = chat_completion_request(
-        api_key,
-        messages,
-        model,
-        max_tokens,
-        temperature,
-        top_p,
-        min_p,
-        top_k,
-        presence_penalty,
-        frequency_penalty,
-        repetition_penalty
+        api_key, messages, model, max_tokens, temperature, top_p, min_p,
+        top_k, presence_penalty, frequency_penalty, repetition_penalty
     )
     final_response = custom_postprocess_text(raw_response)
     return final_response
@@ -320,60 +290,35 @@ def process_translation_file(
     presence_penalty: float,
     frequency_penalty: float,
     repetition_penalty: float,
-    chunk_size: int = 10,
-    max_workers: int = 5
+    max_token_limit: int = 32000
 ):
     """
-    Параллельная обработка файла для перевода с использованием чанков.
-    Отображается прогресс-бар и примерное оставшееся время.
+    Обработка файла для перевода батчами с прогресс-баром и оценкой оставшегося времени.
+    Здесь для простоты реализации используется тот же батчевый принцип.
     """
+    all_titles = df[title_col].astype(str).tolist()
     results = []
-    total_rows = len(df)
+    total_titles = len(all_titles)
     progress_bar = st.progress(0)
     time_placeholder = st.empty()
     overall_start = time.time()
-    rows_processed = 0
+    processed_count = 0
 
-    for start_idx in range(0, total_rows, chunk_size):
-        chunk_start = time.time()
-        end_idx = min(start_idx + chunk_size, total_rows)
-        chunk_indices = list(df.index[start_idx:end_idx])
-        chunk_results = [None] * len(chunk_indices)
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_i = {}
-            for i, row_idx in enumerate(chunk_indices):
-                row_text = str(df.loc[row_idx, title_col])
-                future = executor.submit(
-                    process_translation_single_row,
-                    api_key,
-                    model,
-                    system_prompt,
-                    user_prompt,
-                    row_text,
-                    max_tokens,
-                    temperature,
-                    top_p,
-                    min_p,
-                    top_k,
-                    presence_penalty,
-                    frequency_penalty,
-                    repetition_penalty
-                )
-                future_to_i[future] = i
-            for future in concurrent.futures.as_completed(future_to_i):
-                i = future_to_i[future]
-                chunk_results[i] = future.result()
-
-        results.extend(chunk_results)
-        rows_processed += len(chunk_indices)
-        progress_bar.progress(min(rows_processed / total_rows, 1.0))
-
-        chunk_time = time.time() - chunk_start
-        if len(chunk_indices) > 0:
-            time_per_row = chunk_time / len(chunk_indices)
-            rows_left = total_rows - rows_processed
-            est_time_sec = rows_left * time_per_row
+    while all_titles:
+        batch = prepare_batch(system_prompt, user_prompt, all_titles, max_token_limit)
+        batch_start = time.time()
+        batch_result = process_batch(api_key, model, system_prompt, user_prompt, batch,
+                                     max_tokens, temperature, top_p, min_p, top_k,
+                                     presence_penalty, frequency_penalty, repetition_penalty)
+        results.extend(batch_result)
+        processed_count += len(batch)
+        all_titles = all_titles[len(batch):]
+        progress_bar.progress(min(processed_count / total_titles, 1.0))
+        batch_time = time.time() - batch_start
+        if len(batch) > 0:
+            time_per_title = batch_time / len(batch)
+            titles_left = total_titles - processed_count
+            est_time_sec = titles_left * time_per_title
             if est_time_sec < 60:
                 time_text = f"~{est_time_sec:.1f} сек."
             else:
@@ -388,16 +333,12 @@ def process_translation_file(
 
 # --- Функция для постобработки файла с удалением вредных паттернов ---
 def clean_text(text: str, harmful_patterns: list) -> str:
-    """
-    Для каждого паттерна из списка удаляет его вхождения из текста.
-    """
     for pattern in harmful_patterns:
         text = re.sub(re.escape(pattern), "", text, flags=re.IGNORECASE)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
 def process_postprocessing_file(df: pd.DataFrame, text_col: str, harmful_patterns: list):
-    """Обрабатывает DataFrame, применяя очистку текста по заданным паттернам."""
     cleaned_texts = df[text_col].astype(str).apply(lambda txt: clean_text(txt, harmful_patterns))
     df_out = df.copy()
     df_out["cleaned"] = cleaned_texts
@@ -460,11 +401,10 @@ PRESETS = {
 
 st.title("🧠 Novita AI Batch Processor")
 
-# Поле ввода API Key
 st.sidebar.header("🔑 Настройки API")
 api_key = st.sidebar.text_input("API Key", value=DEFAULT_API_KEY, type="password")
 
-# Создаем 4 вкладки: Обработка текста, Перевод текста, Разделение файла, Постобработка
+# Создаём 4 вкладки
 tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста", "📂 Разделение файла", "🧹 Постобработка"])
 
 ########################################
@@ -472,7 +412,6 @@ tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод т�
 ########################################
 with tabs[0]:
     st.header("🔄 Обработка текста")
-
     with st.expander("🎨 Выбор пресета модели", expanded=True):
         preset_names = list(PRESETS.keys())
         selected_preset = st.selectbox("Выберите пресет", preset_names, index=0)
@@ -615,8 +554,7 @@ with tabs[0]:
                     presence_penalty=presence_penalty_text,
                     frequency_penalty=frequency_penalty_text,
                     repetition_penalty=repetition_penalty_text,
-                    chunk_size=10,
-                    max_workers=max_workers_text
+                    max_token_limit=32000
                 )
                 st.success("✅ Обработка завершена!")
                 output_format = st.selectbox("📥 Формат вывода", ["csv", "txt"], key="output_format_text")
@@ -754,8 +692,7 @@ with tabs[1]:
                     presence_penalty=presence_penalty_translate,
                     frequency_penalty=frequency_penalty_translate,
                     repetition_penalty=repetition_penalty_translate,
-                    chunk_size=10,
-                    max_workers=max_workers_translate
+                    max_token_limit=32000
                 )
                 st.success("✅ Перевод завершен!")
                 if translate_output_format == "csv":
@@ -850,3 +787,4 @@ Explicit Anal Encounter: Hot Mess with Justin Brody & Boomer Banks from Cocky Bo
                 st.download_button("📥 Скачать очищенный файл (TXT)", data=cleaned_content.encode("utf-8"), file_name="cleaned_result.txt", mime="text/plain")
             except Exception as e:
                 st.error(f"Ошибка при обработке TXT: {e}")
+
