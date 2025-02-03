@@ -1,6 +1,6 @@
 import streamlit as st
 import streamlit.components.v1 as components
-import streamlit_cookies_manager as stcm  # импорт для работы с cookie
+import streamlit_cookies_manager as stcm  # для работы с cookie
 import requests
 import json
 import pandas as pd
@@ -13,7 +13,10 @@ import redis
 from dotenv import load_dotenv
 import os
 
-# Загружаем переменные из файла .env
+# Настройка страницы должна быть первым вызовом Streamlit!
+st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
+
+# Загружаем переменные окружения из файла .env
 load_dotenv()
 
 #######################################
@@ -30,6 +33,9 @@ redis_conn = redis.Redis(
     ssl=True,
     decode_responses=True
 )
+
+# ... остальной код приложения ...
+
 
 #######################################
 # 1) ГЛОБАЛЬНОЕ ЛОГИРОВАНИЕ ОШИБОК
