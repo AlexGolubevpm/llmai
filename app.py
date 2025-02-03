@@ -19,6 +19,10 @@ CHAT_COMPLETIONS_ENDPOINT = f"{API_BASE_URL}/chat/completions"
 DEFAULT_API_KEY = "sk_MyidbhnT9jXzw-YDymhijjY8NF15O0Qy7C36etNTAxE"
 MAX_RETRIES = 3
 
+# Максимальный контекст модели (32768 токенов) и число токенов для завершения
+MAX_CONTEXT = 32768
+COMPLETION_TOKENS = 2000  # уменьшили с 32000 до 2000
+
 st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
 
 #######################################
@@ -26,15 +30,6 @@ st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
 #######################################
 
 def custom_postprocess_text(text: str) -> str:
-    """
-    Постобработка текста:
-    1. Удаляет фрагменты, начинающиеся с "Note:".
-    2. Удаляет нежелательные слова "fucking", "explicit", "intense" в начале предложения.
-    3. Заменяет "F***" на "fuck".
-    4. Удаляет китайские символы.
-    5. Удаляет эмодзи.
-    6. Убирает двойные кавычки и лишние пробелы.
-    """
     text = re.sub(r'\s*Note:.*', '', text, flags=re.IGNORECASE)
     pattern_sentence = re.compile(r'(^|(?<=[.!?]\s))\s*(?:fucking|explicit|intense)[\s,:\-]+', flags=re.IGNORECASE)
     text = pattern_sentence.sub(r'\1', text)
@@ -52,14 +47,10 @@ def custom_postprocess_text(text: str) -> str:
     return text
 
 def count_tokens(text: str) -> int:
-    """Простая оценка числа токенов (разбивка по пробелам)."""
     return len(text.split())
 
 def get_model_list(api_key: str):
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     try:
         resp = requests.get(LIST_MODELS_ENDPOINT, headers=headers)
         if resp.status_code == 200:
@@ -73,19 +64,10 @@ def get_model_list(api_key: str):
         st.error(f"Ошибка при получении списка моделей: {e}")
         return []
 
-def chat_completion_request(
-    api_key: str,
-    messages: list,
-    model: str,
-    max_tokens: int,
-    temperature: float,
-    top_p: float,
-    min_p: float,
-    top_k: int,
-    presence_penalty: float,
-    frequency_penalty: float,
-    repetition_penalty: float
-):
+def chat_completion_request(api_key: str, messages: list, model: str, max_tokens: int,
+                            temperature: float, top_p: float, min_p: float, top_k: int,
+                            presence_penalty: float, frequency_penalty: float,
+                            repetition_penalty: float):
     payload = {
         "model": model,
         "messages": messages,
@@ -98,10 +80,7 @@ def chat_completion_request(
         "repetition_penalty": repetition_penalty,
         "min_p": min_p
     }
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
     attempts = 0
     while attempts < MAX_RETRIES:
         attempts += 1
@@ -119,72 +98,49 @@ def chat_completion_request(
             return f"Исключение: {e}"
     return "Ошибка: Превышено число попыток при 429 RATE_LIMIT."
 
-# Обновлённая функция process_batch с корректной обработкой количества результатов.
 def process_batch(api_key: str, model: str, system_prompt: str, user_prompt: str, batch_titles: list,
-                  max_tokens: int, temperature: float, top_p: float, min_p: float,
-                  top_k: int, presence_penalty: float, frequency_penalty: float, repetition_penalty: float) -> list:
-    """
-    Объединяет тайтлы батча через разделитель и отправляет один запрос.
-    Принимает, что API возвращает результаты, разделённые строкой "\n---\n".
-    Если число результатов не совпадает с числом отправленных тайтлов, недостающие заполняются пустыми строками.
-    """
+                  max_tokens: int, temperature: float, top_p: float, min_p: float, top_k: int,
+                  presence_penalty: float, frequency_penalty: float, repetition_penalty: float) -> list:
     separator = "\n---\n"
     combined_titles = separator.join(batch_titles)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": f"{user_prompt}\n{combined_titles}"}
     ]
-    response = chat_completion_request(api_key, messages, model, max_tokens, temperature, top_p,
-                                         min_p, top_k, presence_penalty, frequency_penalty, repetition_penalty)
+    response = chat_completion_request(api_key, messages, model, max_tokens, temperature,
+                                         top_p, min_p, top_k, presence_penalty, frequency_penalty, repetition_penalty)
     processed = response.split(separator)
     if len(processed) != len(batch_titles):
         st.warning("Количество результатов в батче не совпадает с количеством отправленных тайтлов.")
-        # Если результатов меньше, дополним пустыми строками
         if len(processed) < len(batch_titles):
             processed += [""] * (len(batch_titles) - len(processed))
         else:
             processed = processed[:len(batch_titles)]
     return processed
 
-def prepare_batch(system_prompt: str, user_prompt: str, titles: list, max_token_limit: int = 32000) -> list:
+def prepare_batch(system_prompt: str, user_prompt: str, titles: list,
+                  max_context: int = MAX_CONTEXT, completion_tokens: int = COMPLETION_TOKENS) -> list:
     """
-    Собирает батч тайтлов так, чтобы общий объём токенов (system + user + тайтлы) не превышал max_token_limit.
-    Возвращает батч (список тайтлов).
+    Собирает батч так, чтобы:
+    tokens(system_prompt + user_prompt + батч) <= max_context - completion_tokens.
     """
-    base_tokens = count_tokens(system_prompt) + count_tokens(user_prompt)
+    available_tokens = max_context - completion_tokens - count_tokens(system_prompt) - count_tokens(user_prompt)
     batch = []
+    total_tokens = 0
     for title in titles:
         title_tokens = count_tokens(title)
-        if base_tokens + sum(count_tokens(t) for t in batch) + title_tokens <= max_token_limit:
+        if total_tokens + title_tokens <= available_tokens:
             batch.append(title)
+            total_tokens += title_tokens
         else:
             break
     return batch
 
-def process_file(
-    api_key: str,
-    model: str,
-    system_prompt: str,
-    user_prompt: str,
-    df: pd.DataFrame,
-    title_col: str,
-    response_format: str,
-    max_tokens: int,
-    temperature: float,
-    top_p: float,
-    min_p: float,
-    top_k: int,
-    presence_penalty: float,
-    frequency_penalty: float,
-    repetition_penalty: float,
-    max_token_limit: int = 32000
-):
-    """
-    Обработка файла батчами:
-    - Составляет батчи тайтлов так, чтобы общий объём токенов не превышал max_token_limit.
-    - Обновляет прогресс-бар и показывает примерное оставшееся время.
-    - Результаты записываются в столбец "rewrite" DataFrame.
-    """
+def process_file(api_key: str, model: str, system_prompt: str, user_prompt: str,
+                 df: pd.DataFrame, title_col: str, response_format: str, max_tokens: int,
+                 temperature: float, top_p: float, min_p: float, top_k: int,
+                 presence_penalty: float, frequency_penalty: float, repetition_penalty: float,
+                 max_token_limit: int = MAX_CONTEXT):
     all_titles = df[title_col].astype(str).tolist()
     results = []
     total_titles = len(all_titles)
@@ -194,7 +150,7 @@ def process_file(
     processed_count = 0
 
     while all_titles:
-        batch = prepare_batch(system_prompt, user_prompt, all_titles, max_token_limit)
+        batch = prepare_batch(system_prompt, user_prompt, all_titles, max_context=max_token_limit, completion_tokens=COMPLETION_TOKENS)
         batch_start = time.time()
         batch_result = process_batch(api_key, model, system_prompt, user_prompt, batch,
                                      max_tokens, temperature, top_p, min_p, top_k,
@@ -217,7 +173,6 @@ def process_file(
     overall_time = time.time() - overall_start
     time_placeholder.success(f"Обработка завершена за {overall_time:.1f} сек.")
     df_out = df.copy()
-    # Гарантируем, что длина списка результатов равна числу строк
     if len(results) != len(df):
         st.error("Ошибка: число обработанных результатов не соответствует количеству строк исходного файла.")
     else:
@@ -226,77 +181,35 @@ def process_file(
 
 # --- Функции для перевода (аналогичные) ---
 
-def translate_completion_request(
-    api_key: str,
-    messages: list,
-    model: str,
-    max_tokens: int,
-    temperature: float,
-    top_p: float,
-    min_p: float,
-    top_k: int,
-    presence_penalty: float,
-    frequency_penalty: float,
-    repetition_penalty: float
-):
-    raw_response = chat_completion_request(
-        api_key, messages, model, max_tokens, temperature, top_p, min_p,
-        top_k, presence_penalty, frequency_penalty, repetition_penalty
-    )
+def translate_completion_request(api_key: str, messages: list, model: str, max_tokens: int,
+                                   temperature: float, top_p: float, min_p: float, top_k: int,
+                                   presence_penalty: float, frequency_penalty: float,
+                                   repetition_penalty: float):
+    raw_response = chat_completion_request(api_key, messages, model, max_tokens, temperature,
+                                           top_p, min_p, top_k, presence_penalty, frequency_penalty, repetition_penalty)
     final_response = custom_postprocess_text(raw_response)
     return final_response
 
-def process_translation_single_row(
-    api_key: str,
-    model: str,
-    system_prompt: str,
-    user_prompt: str,
-    row_text: str,
-    max_tokens: int,
-    temperature: float,
-    top_p: float,
-    min_p: float,
-    top_k: int,
-    presence_penalty: float,
-    frequency_penalty: float,
-    repetition_penalty: float
-):
+def process_translation_single_row(api_key: str, model: str, system_prompt: str, user_prompt: str,
+                                   row_text: str, max_tokens: int, temperature: float, top_p: float,
+                                   min_p: float, top_k: int, presence_penalty: float, frequency_penalty: float,
+                                   repetition_penalty: float):
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": f"{user_prompt}\n{row_text}"}
     ]
-    translated_text = translate_completion_request(
-        api_key=api_key,
-        messages=messages,
-        model=model,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        top_p=top_p,
-        min_p=min_p,
-        top_k=top_k,
-        presence_penalty=presence_penalty,
-        frequency_penalty=frequency_penalty,
-        repetition_penalty=repetition_penalty
-    )
+    translated_text = translate_completion_request(api_key=api_key, messages=messages, model=model,
+                                                     max_tokens=max_tokens, temperature=temperature,
+                                                     top_p=top_p, min_p=min_p, top_k=top_k,
+                                                     presence_penalty=presence_penalty, frequency_penalty=frequency_penalty,
+                                                     repetition_penalty=repetition_penalty)
     return translated_text
 
-def process_translation_file(
-    api_key: str,
-    model: str,
-    system_prompt: str,
-    user_prompt: str,
-    df: pd.DataFrame,
-    title_col: str,
-    max_tokens: int,
-    temperature: float,
-    top_p: float,
-    min_p: float,
-    top_k: int,
-    presence_penalty: float,
-    frequency_penalty: float,
-    repetition_penalty: float,
-    max_token_limit: int = 32000
-):
+def process_translation_file(api_key: str, model: str, system_prompt: str, user_prompt: str,
+                             df: pd.DataFrame, title_col: str, max_tokens: int, temperature: float,
+                             top_p: float, min_p: float, top_k: int, presence_penalty: float,
+                             frequency_penalty: float, repetition_penalty: float,
+                             max_token_limit: int = MAX_CONTEXT):
     all_titles = df[title_col].astype(str).tolist()
     results = []
     total_titles = len(all_titles)
@@ -306,7 +219,7 @@ def process_translation_file(
     processed_count = 0
 
     while all_titles:
-        batch = prepare_batch(system_prompt, user_prompt, all_titles, max_token_limit)
+        batch = prepare_batch(system_prompt, user_prompt, all_titles, max_context=max_token_limit, completion_tokens=COMPLETION_TOKENS)
         batch_start = time.time()
         batch_result = process_batch(api_key, model, system_prompt, user_prompt, batch,
                                      max_tokens, temperature, top_p, min_p, top_k,
@@ -404,10 +317,8 @@ PRESETS = {
 #######################################
 
 st.title("🧠 Novita AI Batch Processor")
-
 st.sidebar.header("🔑 Настройки API")
 api_key = st.sidebar.text_input("API Key", value=DEFAULT_API_KEY, type="password")
-
 tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста", "📂 Разделение файла", "🧹 Постобработка"])
 
 ########################################
@@ -484,19 +395,11 @@ with tabs[0]:
                 {"role": "system", "content": system_prompt_text},
                 {"role": "user", "content": user_prompt_single_text}
             ]
-            raw_response = chat_completion_request(
-                api_key=api_key,
-                messages=messages,
-                model=selected_model_text,
-                max_tokens=max_tokens_text,
-                temperature=temperature_text,
-                top_p=top_p_text,
-                min_p=min_p_text,
-                top_k=top_k_text,
-                presence_penalty=presence_penalty_text,
-                frequency_penalty=frequency_penalty_text,
-                repetition_penalty=repetition_penalty_text
-            )
+            raw_response = chat_completion_request(api_key=api_key, messages=messages, model=selected_model_text,
+                                                     max_tokens=max_tokens_text, temperature=temperature_text,
+                                                     top_p=top_p_text, min_p=min_p_text, top_k=top_k_text,
+                                                     presence_penalty=presence_penalty_text, frequency_penalty=frequency_penalty_text,
+                                                     repetition_penalty=repetition_penalty_text)
             final_response = custom_postprocess_text(raw_response)
             st.success("✅ Результат получен!")
             st.text_area("📄 Ответ от модели", value=final_response, height=200)
@@ -541,24 +444,13 @@ with tabs[0]:
             if not api_key:
                 st.error("❌ API Key не указан!")
             else:
-                df_out_text = process_file(
-                    api_key=api_key,
-                    model=selected_model_text,
-                    system_prompt=system_prompt_text,
-                    user_prompt=user_prompt_text,
-                    df=df_text,
-                    title_col=title_col_text,
-                    response_format="csv",
-                    max_tokens=max_tokens_text,
-                    temperature=temperature_text,
-                    top_p=top_p_text,
-                    min_p=min_p_text,
-                    top_k=top_k_text,
-                    presence_penalty=presence_penalty_text,
-                    frequency_penalty=frequency_penalty_text,
-                    repetition_penalty=repetition_penalty_text,
-                    max_token_limit=32000
-                )
+                df_out_text = process_file(api_key=api_key, model=selected_model_text, system_prompt=system_prompt_text,
+                                           user_prompt=user_prompt_text, df=df_text, title_col=title_col_text,
+                                           response_format="csv", max_tokens=max_tokens_text,
+                                           temperature=temperature_text, top_p=top_p_text, min_p=min_p_text,
+                                           top_k=top_k_text, presence_penalty=presence_penalty_text,
+                                           frequency_penalty=frequency_penalty_text, repetition_penalty=repetition_penalty_text,
+                                           max_token_limit=MAX_CONTEXT)
                 st.success("✅ Обработка завершена!")
                 output_format = st.selectbox("📥 Формат вывода", ["csv", "txt"], key="output_format_text")
                 if output_format == "csv":
@@ -680,23 +572,13 @@ with tabs[1]:
                 st.error("❌ Не выбрана колонка для перевода!")
             else:
                 user_prompt_translate = f"Translate the following text from {source_language} to {target_language}:"
-                df_translated = process_translation_file(
-                    api_key=api_key,
-                    model=selected_model_translate,
-                    system_prompt=system_prompt_translate,
-                    user_prompt=user_prompt_translate,
-                    df=df_translate,
-                    title_col=title_col_translate,
-                    max_tokens=max_tokens_translate,
-                    temperature=temperature_translate,
-                    top_p=top_p_translate,
-                    min_p=min_p_translate,
-                    top_k=top_k_translate,
-                    presence_penalty=presence_penalty_translate,
-                    frequency_penalty=frequency_penalty_translate,
-                    repetition_penalty=repetition_penalty_translate,
-                    max_token_limit=32000
-                )
+                df_translated = process_translation_file(api_key=api_key, model=selected_model_translate,
+                                                         system_prompt=system_prompt_translate, user_prompt=user_prompt_translate,
+                                                         df=df_translate, title_col=title_col_translate,
+                                                         max_tokens=max_tokens_translate, temperature=temperature_translate,
+                                                         top_p=top_p_translate, min_p=min_p_translate, top_k=top_k_translate,
+                                                         presence_penalty=presence_penalty_translate, frequency_penalty=frequency_penalty_translate,
+                                                         repetition_penalty=repetition_penalty_translate, max_token_limit=MAX_CONTEXT)
                 st.success("✅ Перевод завершен!")
                 if translate_output_format == "csv":
                     csv_translated = df_translated.to_csv(index=False).encode("utf-8")
@@ -725,12 +607,10 @@ with tabs[2]:
                 for i in range(num_parts):
                     part_df = df_split.iloc[i*split_size:(i+1)*split_size]
                     csv_part = part_df.to_csv(index=False).encode("utf-8")
-                    st.download_button(
-                        label=f"Скачать часть {i+1} (CSV)",
-                        data=csv_part,
-                        file_name=f"part_{i+1}.csv",
-                        mime="text/csv"
-                    )
+                    st.download_button(label=f"Скачать часть {i+1} (CSV)",
+                                       data=csv_part,
+                                       file_name=f"part_{i+1}.csv",
+                                       mime="text/csv")
             else:
                 content = uploaded_file_split.read().decode("utf-8")
                 lines = content.splitlines()
@@ -741,12 +621,10 @@ with tabs[2]:
                 for i in range(num_parts):
                     part_lines = lines[i*split_size:(i+1)*split_size]
                     part_content = "\n".join(part_lines)
-                    st.download_button(
-                        label=f"Скачать часть {i+1} (TXT)",
-                        data=part_content.encode("utf-8"),
-                        file_name=f"part_{i+1}.txt",
-                        mime="text/plain"
-                    )
+                    st.download_button(label=f"Скачать часть {i+1} (TXT)",
+                                       data=part_content.encode("utf-8"),
+                                       file_name=f"part_{i+1}.txt",
+                                       mime="text/plain")
         except Exception as e:
             st.error(f"Ошибка при обработке файла: {e}")
 
@@ -790,5 +668,3 @@ Explicit Anal Encounter: Hot Mess with Justin Brody & Boomer Banks from Cocky Bo
                 st.download_button("📥 Скачать очищенный файл (TXT)", data=cleaned_content.encode("utf-8"), file_name="cleaned_result.txt", mime="text/plain")
             except Exception as e:
                 st.error(f"Ошибка при обработке TXT: {e}")
-
-
