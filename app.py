@@ -1,5 +1,6 @@
 import streamlit as st
 import streamlit.components.v1 as components
+import streamlit_cookies_manager as stcm  # импорт для работы с cookie
 import requests
 import json
 import pandas as pd
@@ -11,20 +12,6 @@ import uuid
 import redis
 from dotenv import load_dotenv
 import os
-import streamlit_cookies_manager as stcm  # Импорт библиотеки для работы с cookie
-import uuid
-
-# Если job_id уже есть в сессии, ничего не делаем.
-if "job_id" not in st.session_state:
-    # Инициализируем менеджер cookie
-    cookies = stcm.Cookies()
-    # Пытаемся получить job_id из cookie
-    job_id_cookie = cookies.get("job_id")
-    if job_id_cookie is None:
-        # Если cookie отсутствует, генерируем новый job_id
-        st.session_state.job_id = str(uuid.uuid4())
-        cookies["job_id"] = st.session_state.job_id
-        cookies.save()  # Сохраняем cookie
 
 # Загружаем переменные из файла .env
 load_dotenv()
@@ -522,14 +509,17 @@ st.title("🧠 Novita AI Batch Processor")
 st.sidebar.header("🔑 Настройки API")
 api_key = st.sidebar.text_input("API Key", value=DEFAULT_API_KEY, type="password")
 
-# --- Работа с job_id: только считываем его из query-параметров, без обновления URL ---
+# --- Сохранение job_id с использованием Cookies ---
+import streamlit_cookies_manager as stcm  # если еще не импортировано
+cookies = stcm.Cookies()
 if "job_id" not in st.session_state:
-    query_params = st.experimental_get_query_params()
-    if "job_id" in query_params and query_params["job_id"]:
-        st.session_state.job_id = query_params["job_id"][0]
+    if cookies.get("job_id") is not None:
+        st.session_state.job_id = cookies.get("job_id")
     else:
         st.session_state.job_id = str(uuid.uuid4())
-        st.write(f"Сгенерирован новый job_id: {st.session_state.job_id}")
+        cookies["job_id"] = st.session_state.job_id
+        cookies.save()
+st.write(f"Используемый job_id: {st.session_state.job_id}")
 # --- Конец блока job_id ---
 
 tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста", "📋 Логи и Статус"])
@@ -878,3 +868,4 @@ with tabs[2]:
     result_csv = redis_conn.get(f"job:{job_id}:result_csv")
     if result_csv:
         st.download_button("📥 Скачать результат обработки (CSV)", data=result_csv.encode("utf-8"), file_name="result_from_redis.csv", mime="text/csv")
+
