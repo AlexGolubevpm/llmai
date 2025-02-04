@@ -619,13 +619,18 @@ with tabs[0]:
                     max_workers=max_workers_text
                 )
                 st.success("✅ Обработка завершена!")
-                output_format = st.selectbox("📥 Формат вывода", ["csv", "txt"], key="output_format_text")
-                if output_format == "csv":
-                    csv_out_text = df_out_text.to_csv(index=False).encode("utf-8")
-                    st.download_button("📥 Скачать результат (CSV)", data=csv_out_text, file_name="result.csv", mime="text/csv")
-                else:
-                    txt_out_text = df_out_text.to_csv(index=False, sep="|", header=False).encode("utf-8")
-                    st.download_button("📥 Скачать результат (TXT)", data=txt_out_text, file_name="result.txt", mime="text/plain")
+                # Сохраняем результат в session_state для дальнейшего использования
+                st.session_state.df_out_text = df_out_text
+
+        # Если результат обработки существует в session_state, показываем кнопки для скачивания
+        if "df_out_text" in st.session_state:
+            output_format = st.selectbox("📥 Формат вывода", ["csv", "txt"], key="output_format_text")
+            if output_format == "csv":
+                csv_out_text = st.session_state.df_out_text.to_csv(index=False).encode("utf-8")
+                st.download_button("📥 Скачать результат (CSV)", data=csv_out_text, file_name="result.csv", mime="text/csv")
+            else:
+                txt_out_text = st.session_state.df_out_text.to_csv(index=False, sep="|", header=False).encode("utf-8")
+                st.download_button("📥 Скачать результат (TXT)", data=txt_out_text, file_name="result.txt", mime="text/plain")
 
 ########################################
 # Вкладка 2: Перевод текста
