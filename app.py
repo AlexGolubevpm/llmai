@@ -618,19 +618,14 @@ with tabs[0]:
                     chunk_size=10,
                     max_workers=max_workers_text
                 )
-st.success("✅ Обработка завершена!")
-output_format = st.selectbox("📥 Формат вывода", ["csv", "txt"], key="output_format_text")
-if 'df_out_text' in locals() and df_out_text is not None:
-    if output_format == "csv":
-        csv_out_text = df_out_text.to_csv(index=False, sep="|").encode("utf-8")
-        st.download_button("📥 Скачать результат (CSV)", data=csv_out_text, file_name="result.csv", mime="text/csv")
-    else:
-        txt_out_text = df_out_text.to_csv(index=False, sep="|", header=False).encode("utf-8")
-        st.download_button("📥 Скачать результат (TXT)", data=txt_out_text, file_name="result.txt", mime="text/plain")
-else:
-    st.error("Обработка файла не завершена или произошла ошибка. Проверьте входные данные и обработку файла.")
-
-
+                st.success("✅ Обработка завершена!")
+                output_format = st.selectbox("📥 Формат вывода", ["csv", "txt"], key="output_format_text")
+                if output_format == "csv":
+                    csv_out_text = df_out_text.to_csv(index=False).encode("utf-8")
+                    st.download_button("📥 Скачать результат (CSV)", data=csv_out_text, file_name="result.csv", mime="text/csv")
+                else:
+                    txt_out_text = df_out_text.to_csv(index=False, sep="|", header=False).encode("utf-8")
+                    st.download_button("📥 Скачать результат (TXT)", data=txt_out_text, file_name="result.txt", mime="text/plain")
 
 ########################################
 # Вкладка 2: Перевод текста
