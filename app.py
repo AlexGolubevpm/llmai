@@ -7,7 +7,6 @@ import time
 import concurrent.futures
 import re
 import math
-import threading  # добавляем модуль для работы с потоками
 
 #######################################
 # 1) НАСТРОЙКИ ПРИЛОЖЕНИЯ
@@ -596,35 +595,32 @@ with tabs[0]:
         with st.expander("📂 Выбор колонок файла", expanded=True):
             title_col_text = st.selectbox("📌 Какая колонка является заголовком?", cols_text, key="title_col_text")
             max_workers_text = st.slider("🔄 Потоки (max_workers)", min_value=1, max_value=20, value=5, key="max_workers_text")
-        # Запуск обработки файла в отдельном потоке, чтобы не блокировать UI
         if st.button("▶️ Запустить обработку файла (Обработка текста)", key="process_file_text"):
             if not api_key:
                 st.error("❌ API Key не указан!")
             else:
-                def run_process_file():
-                    df_out_text = process_file(
-                        api_key=api_key,
-                        model=selected_model_text,
-                        system_prompt=system_prompt_text,
-                        user_prompt=user_prompt_text,
-                        df=df_text,
-                        title_col=title_col_text,
-                        response_format="csv",
-                        max_tokens=max_tokens_text,
-                        temperature=temperature_text,
-                        top_p=top_p_text,
-                        min_p=min_p_text,
-                        top_k=top_k_text,
-                        presence_penalty=presence_penalty_text,
-                        frequency_penalty=frequency_penalty_text,
-                        repetition_penalty=repetition_penalty_text,
-                        chunk_size=10,
-                        max_workers=max_workers_text
-                    )
-                    # Сохраняем результат в session_state для дальнейшего использования
-                    st.session_state.df_out_text = df_out_text
-                threading.Thread(target=run_process_file).start()
-                st.info("Обработка запущена в фоновом режиме. Пожалуйста, подождите...")
+                df_out_text = process_file(
+                    api_key=api_key,
+                    model=selected_model_text,
+                    system_prompt=system_prompt_text,
+                    user_prompt=user_prompt_text,
+                    df=df_text,
+                    title_col=title_col_text,
+                    response_format="csv",
+                    max_tokens=max_tokens_text,
+                    temperature=temperature_text,
+                    top_p=top_p_text,
+                    min_p=min_p_text,
+                    top_k=top_k_text,
+                    presence_penalty=presence_penalty_text,
+                    frequency_penalty=frequency_penalty_text,
+                    repetition_penalty=repetition_penalty_text,
+                    chunk_size=10,
+                    max_workers=max_workers_text
+                )
+                st.success("✅ Обработка завершена!")
+                # Сохраняем результат в session_state для дальнейшего использования
+                st.session_state.df_out_text = df_out_text
 
         # Если результат обработки существует в session_state, показываем кнопки для скачивания
         if "df_out_text" in st.session_state:
@@ -859,4 +855,3 @@ Explicit Anal Encounter: Hot Mess with Justin Brody & Boomer Banks from Cocky Bo
                 st.download_button("📥 Скачать очищенный файл (TXT)", data=cleaned_content.encode("utf-8"), file_name="cleaned_result.txt", mime="text/plain")
             except Exception as e:
                 st.error(f"Ошибка при обработке TXT: {e}")
-
