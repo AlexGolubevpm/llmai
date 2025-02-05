@@ -465,7 +465,7 @@ st.sidebar.header("🔑 Настройки API")
 api_key = st.sidebar.text_input("API Key", value=DEFAULT_API_KEY, type="password")
 
 # Создаем 4 вкладки: Обработка текста, Перевод текста, Разделение файла, Постобработка
-tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста", "📂 Разделение файла", "🧹 Постобработка"])
+tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста", "📂 Разделение файла", "🧹 Постобработка", "🗂️ Выбор столбцов"])
 
 ########################################
 # Вкладка 1: Обработка текста
@@ -855,3 +855,54 @@ Explicit Anal Encounter: Hot Mess with Justin Brody & Boomer Banks from Cocky Bo
                 st.download_button("📥 Скачать очищенный файл (TXT)", data=cleaned_content.encode("utf-8"), file_name="cleaned_result.txt", mime="text/plain")
             except Exception as e:
                 st.error(f"Ошибка при обработке TXT: {e}")
+########################################
+# Вкладка 5: Выбор столбцов из CSV
+########################################
+with tabs[4]:
+    st.header("🗂️ Выбор столбцов из CSV")
+    st.markdown(
+        """
+        Загрузите CSV-файл и выберите столбцы, которые хотите оставить.  
+        Доступны следующие столбцы: **id**, **title**, **rewrite**, **cleaned**.  
+        В результирующем файле столбцы будут разделены символом `|`.
+        """
+    )
+    
+    uploaded_file_filter = st.file_uploader("📤 Загрузите CSV-файл", type=["csv"], key="uploaded_file_filter")
+    
+    if uploaded_file_filter is not None:
+        try:
+            df_filter = pd.read_csv(uploaded_file_filter)
+            st.write("### 📋 Предпросмотр загруженного файла")
+            st.dataframe(df_filter.head(10))
+            
+            # Из доступных столбцов выбираем только те, что присутствуют в файле
+            possible_columns = ["id", "title", "rewrite", "cleaned"]
+            available_columns = [col for col in possible_columns if col in df_filter.columns]
+            if not available_columns:
+                st.error("В загруженном файле нет ни одного из ожидаемых столбцов: id, title, rewrite, cleaned.")
+            else:
+                selected_columns = st.multiselect(
+                    "Выберите столбцы для сохранения",
+                    options=available_columns,
+                    default=available_columns
+                )
+                
+                if selected_columns:
+                    filtered_df = df_filter[selected_columns]
+                    st.write("### 📋 Предпросмотр отфильтрованного файла")
+                    st.dataframe(filtered_df.head(10))
+                    
+                    # Экспорт в CSV с разделителем '|'
+                    csv_data = filtered_df.to_csv(index=False, sep="|").encode("utf-8")
+                    st.download_button(
+                        label="📥 Скачать отфильтрованный CSV",
+                        data=csv_data,
+                        file_name="filtered_result.csv",
+                        mime="text/csv"
+                    )
+                else:
+                    st.warning("Пожалуйста, выберите хотя бы один столбец для сохранения.")
+        except Exception as e:
+            st.error(f"Ошибка при обработке файла: {e}")
+
