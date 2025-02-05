@@ -9,7 +9,6 @@ import re
 import math
 import csv
 
-
 #######################################
 # 1) НАСТРОЙКИ ПРИЛОЖЕНИЯ
 #######################################
@@ -388,7 +387,7 @@ def process_translation_file(
     df_out["translated_title"] = results
     return df_out
 
-# --- Функция для постобработки файла с удалением вредных паттернов ---
+# --- Функция для очистки текста по паттернам ---
 def clean_text(text: str, harmful_patterns: list) -> str:
     """
     Для каждого паттерна из списка удаляет его вхождения из текста.
@@ -466,8 +465,13 @@ st.title("🧠 Novita AI Batch Processor")
 st.sidebar.header("🔑 Настройки API")
 api_key = st.sidebar.text_input("API Key", value=DEFAULT_API_KEY, type="password")
 
-# Создаем 4 вкладки: Обработка текста, Перевод текста, Разделение файла, Постобработка
-tabs = st.tabs(["🔄 Обработка текста", "🌐 Перевод текста", "📂 Разделение файла", "🧹 Постобработка", "🗂️ Выбор столбцов"])
+# Создаем 4 вкладки: Обработка текста, Перевод текста, Разделение файла, Постобработка и выбор столбцов
+tabs = st.tabs([
+    "🔄 Обработка текста", 
+    "🌐 Перевод текста", 
+    "📂 Разделение файла", 
+    "🧹 Постобработка и выбор столбцов"
+])
 
 ########################################
 # Вкладка 1: Обработка текста
@@ -621,10 +625,8 @@ with tabs[0]:
                     max_workers=max_workers_text
                 )
                 st.success("✅ Обработка завершена!")
-                # Сохраняем результат в session_state для дальнейшего использования
                 st.session_state.df_out_text = df_out_text
 
-        # Если результат обработки существует в session_state, показываем кнопки для скачивания
         if "df_out_text" in st.session_state:
             output_format = st.selectbox("📥 Формат вывода", ["csv", "txt"], key="output_format_text")
             if output_format == "csv":
@@ -818,93 +820,67 @@ with tabs[2]:
             st.error(f"Ошибка при обработке файла: {e}")
 
 ########################################
-# Вкладка 4: Постобработка
+# Вкладка 4: Постобработка и выбор столбцов
 ########################################
 with tabs[3]:
-    st.header("🧹 Постобработка")
-    st.markdown("Загрузите файл (CSV или TXT) и задайте паттерны, которые необходимо удалить из текста.")
-    default_patterns = """Intense Deep Ass Fucking Session with Alex Greene and Brendan Patrick - Icon Male
-Intense Black-on-Black Sauna Sex: Micah Brandt and Sean Zevran Heat Up the Hot House
-Explicit Threesome Adventures: Clay Towers & Hans Berlin Heat Up Pride Studios
-Explicit Anal Encounter: Hot Mess with Justin Brody & Boomer Banks from Cocky Boys"""
-    harmful_patterns_input = st.text_area("Введите паттерны (по одному в строке)", value=default_patterns, height=150)
-    harmful_patterns = [line.strip() for line in harmful_patterns_input.splitlines() if line.strip()]
-    uploaded_file_post = st.file_uploader("📤 Загрузите файл для постобработки (CSV или TXT)", type=["csv", "txt"], key="uploaded_file_post")
-    if uploaded_file_post is not None:
-        file_extension_post = uploaded_file_post.name.split(".")[-1].lower()
-        if file_extension_post == "csv":
-            try:
-                df_post = pd.read_csv(uploaded_file_post)
-                st.write("### 📋 Предпросмотр файла")
-                st.dataframe(df_post.head(10))
-                cols_post = df_post.columns.tolist()
-                text_col = st.selectbox("Выберите колонку для очистки", cols_post, key="text_col_post")
-                if st.button("▶️ Запустить постобработку (CSV)", key="process_post_csv"):
-                    df_cleaned = process_postprocessing_file(df_post, text_col, harmful_patterns)
-                    st.success("✅ Постобработка завершена!")
-                    csv_cleaned = df_cleaned.to_csv(index=False).encode("utf-8")
-                    st.download_button("📥 Скачать очищенный файл (CSV)", data=csv_cleaned, file_name="cleaned_result.csv", mime="text/csv")
-            except Exception as e:
-                st.error(f"Ошибка при чтении CSV: {e}")
-        else:
-            try:
-                content_post = uploaded_file_post.read().decode("utf-8")
-                lines_post = content_post.splitlines()
-                st.write(f"Загружено строк: {len(lines_post)}")
-                cleaned_lines = [clean_text(line, harmful_patterns) for line in lines_post]
-                cleaned_content = "\n".join(cleaned_lines)
-                st.text_area("Предпросмотр очищенного текста", value=cleaned_content[:1000], height=200)
-                st.download_button("📥 Скачать очищенный файл (TXT)", data=cleaned_content.encode("utf-8"), file_name="cleaned_result.txt", mime="text/plain")
-            except Exception as e:
-                st.error(f"Ошибка при обработке TXT: {e}")
-########################################
-# Вкладка 5: Выбор столбцов из CSV
-########################################
-with tabs[4]:
-    st.header("🗂️ Выбор столбцов из CSV")
+    st.header("🧹 Постобработка и выбор столбцов")
     st.markdown(
         """
-        Загрузите CSV-файл и выберите столбцы, которые хотите оставить.  
-        Доступны следующие столбцы: **id**, **title**, **rewrite**, **cleaned**.  
-        В результирующем файле столбцы будут разделены символом `|`.
+        Загрузите CSV-файл, задайте паттерны для удаления «неправильных» слов, а затем выберите столбцы,
+        которые хотите оставить в итоговом файле.  
+        Результирующий CSV будет сформирован с разделителем **|** без кавычек.
         """
     )
+    harmful_patterns_input = st.text_area("Введите паттерны (по одному в строке)", 
+                                            value="""Intense Deep Ass Fucking Session with Alex Greene and Brendan Patrick - Icon Male
+Intense Black-on-Black Sauna Sex: Micah Brandt and Sean Zevran Heat Up the Hot House
+Explicit Threesome Adventures: Clay Towers & Hans Berlin Heat Up Pride Studios
+Explicit Anal Encounter: Hot Mess with Justin Brody & Boomer Banks from Cocky Boys""", 
+                                            height=150)
+    harmful_patterns = [line.strip() for line in harmful_patterns_input.splitlines() if line.strip()]
     
-    uploaded_file_filter = st.file_uploader("📤 Загрузите CSV-файл", type=["csv"], key="uploaded_file_filter")
+    uploaded_file_post = st.file_uploader("📤 Загрузите CSV-файл для постобработки", type=["csv"], key="uploaded_file_post")
     
-    if uploaded_file_filter is not None:
+    if uploaded_file_post is not None:
         try:
-            df_filter = pd.read_csv(uploaded_file_filter)
+            df_post = pd.read_csv(uploaded_file_post)
             st.write("### 📋 Предпросмотр загруженного файла")
-            st.dataframe(df_filter.head(10))
+            st.dataframe(df_post.head(10))
             
-            # Из доступных столбцов выбираем только те, что присутствуют в файле
-            possible_columns = ["id", "title", "rewrite", "cleaned"]
-            available_columns = [col for col in possible_columns if col in df_filter.columns]
+            cols_post = df_post.columns.tolist()
+            with st.expander("🔧 Настройки постобработки"):
+                text_col = st.selectbox("Выберите колонку, в которой нужно удалить паттерны", cols_post, key="text_col_post")
+            # Применяем очистку
+            df_cleaned = process_postprocessing_file(df_post, text_col, harmful_patterns)
+            st.success("✅ Очистка файла завершена!")
+            
+            # Теперь выбираем столбцы для итогового файла.
+            # Ожидаемые столбцы: id, title, rewrite, cleaned. Если их нет, то доступны все.
+            expected_columns = ["id", "title", "rewrite", "cleaned"]
+            available_columns = [col for col in expected_columns if col in df_cleaned.columns]
             if not available_columns:
-                st.error("В загруженном файле нет ни одного из ожидаемых столбцов: id, title, rewrite, cleaned.")
-            else:
-                selected_columns = st.multiselect(
-                    "Выберите столбцы для сохранения",
-                    options=available_columns,
-                    default=available_columns
+                # Если ни одного из ожидаемых нет, предлагаем выбрать из всех
+                available_columns = cols_post
+            selected_columns = st.multiselect("Выберите столбцы для итогового файла", options=available_columns, default=available_columns)
+            
+            if selected_columns:
+                filtered_df = df_cleaned[selected_columns]
+                st.write("### 📋 Предпросмотр итогового файла")
+                st.dataframe(filtered_df.head(10))
+                # Экспорт в CSV с разделителем '|' без кавычек
+                csv_data = filtered_df.to_csv(
+                    index=False,
+                    sep="|",
+                    quoting=csv.QUOTE_NONE,
+                    escapechar="\\"
+                ).encode("utf-8")
+                st.download_button(
+                    label="📥 Скачать итоговый CSV",
+                    data=csv_data,
+                    file_name="final_result.csv",
+                    mime="text/csv"
                 )
-                
-                if selected_columns:
-                    filtered_df = df_filter[selected_columns]
-                    st.write("### 📋 Предпросмотр отфильтрованного файла")
-                    st.dataframe(filtered_df.head(10))
-                    
-                    # Экспорт в CSV с разделителем '|'
-                    csv_data = filtered_df.to_csv(index=False, sep="|", quoting=csv.QUOTE_ALL).encode("utf-8")
-                    st.download_button(
-                        label="📥 Скачать отфильтрованный CSV",
-                        data=csv_data,
-                        file_name="filtered_result.csv",
-                        mime="text/csv"
-                    )
-                else:
-                    st.warning("Пожалуйста, выберите хотя бы один столбец для сохранения.")
+            else:
+                st.warning("Пожалуйста, выберите хотя бы один столбец для итогового файла.")
         except Exception as e:
             st.error(f"Ошибка при обработке файла: {e}")
-
