@@ -7,6 +7,17 @@ import time
 import concurrent.futures
 import re
 import math
+import csv
+
+# Экспорт в CSV с разделителем '|' и оборачиванием всех полей в кавычки
+csv_data = filtered_df.to_csv(index=False, sep="|", quoting=csv.QUOTE_ALL).encode("utf-8")
+st.download_button(
+    label="📥 Скачать отфильтрованный CSV",
+    data=csv_data,
+    file_name="filtered_result.csv",
+    mime="text/csv"
+)
+
 
 #######################################
 # 1) НАСТРОЙКИ ПРИЛОЖЕНИЯ
