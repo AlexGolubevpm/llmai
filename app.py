@@ -970,13 +970,14 @@ with tabs[5]:
 # Вкладка 7: Теги
 ########################################
 
+# --- Вкладка 6: Автодополнение и фильтрация тегов ---
 with tabs[6]:
     st.header("🏷️ Автодополнение и фильтрация тегов")
 
-    # 1) Allowed tags
+    # 1) Ввод разрешённых тегов
     tags_input = st.text_area(
-        "Введите Allowed Tags (запятая или новая строка)", 
-        height=150, 
+        "Введите Allowed Tags (через запятую или новую строку)",
+        height=150,
         placeholder="wellness, health, fitness, beauty..."
     )
     user_tags = [t.strip() for t in re.split(r'[\n,]+', tags_input) if t.strip()]
@@ -984,7 +985,7 @@ with tabs[6]:
         st.warning("Введите хотя бы один Allowed Tag выше.")
         st.stop()
 
-    # 2) Выбор модели и параметров (копипаст из таба 0)
+    # 2) Обновление и выбор модели
     if st.button("🔄 Обновить список моделей (Теги)", key="refresh_models_tags"):
         if api_key:
             st.session_state["model_list_tags"] = get_model_list(api_key)
@@ -992,36 +993,39 @@ with tabs[6]:
             st.error("❌ API Key не указан!")
     model_list_tags = st.session_state.get("model_list_tags", [])
     if model_list_tags:
-        selected_model_tags = st.selectbox("Модель для тегов", model_list_tags, key="select_model_tags")
+        selected_model_tags = st.selectbox("Выберите модель для тегов", model_list_tags, key="select_model_tags")
     else:
-        selected_model_tags = st.selectbox("Модель (дефолт)", ["meta-llama/llama-3.1-8b-instruct"], key="default_model_tags")
+        selected_model_tags = st.selectbox("Модель по умолчанию", ["meta-llama/llama-3.1-8b-instruct"], key="default_model_tags")
 
+    # 3) Параметры генерации
     preset = PRESETS["Default"]
-    max_tokens_tags        = st.slider("max_tokens (теги)", 0, 64000, preset["max_tokens"], key="max_tokens_tags")
-    temperature_tags       = st.slider("temperature (теги)", 0.0, 2.0, preset["temperature"], 0.01, key="temperature_tags")
-    top_p_tags             = st.slider("top_p (теги)", 0.0, 1.0, preset["top_p"], 0.01, key="top_p_tags")
-    min_p_tags             = st.slider("min_p (теги)", 0.0, 1.0, preset["min_p"], 0.01, key="min_p_tags")
-    top_k_tags             = st.slider("top_k (теги)", 0, 100, preset["top_k"], key="top_k_tags")
-    presence_penalty_tags  = st.slider("presence_penalty (теги)", 0.0, 2.0, preset["presence_penalty"], 0.01, key="presence_penalty_tags")
-    frequency_penalty_tags = st.slider("frequency_penalty (теги)", 0.0, 2.0, preset["frequency_penalty"], 0.01, key="frequency_penalty_tags")
-    repetition_penalty_tags= st.slider("repetition_penalty (теги)", 0.0, 2.0, preset["repetition_penalty"], 0.01, key="repetition_penalty_tags")
+    max_tokens_tags        = st.slider("🔢 max_tokens (теги)", 0, 64000, preset["max_tokens"], key="max_tokens_tags")
+    temperature_tags       = st.slider("🌡️ temperature (теги)", 0.0, 2.0, preset["temperature"], 0.01, key="temperature_tags")
+    top_p_tags             = st.slider("📊 top_p (теги)", 0.0, 1.0, preset["top_p"], 0.01, key="top_p_tags")
+    min_p_tags             = st.slider("📉 min_p (теги)", 0.0, 1.0, preset["min_p"], 0.01, key="min_p_tags")
+    top_k_tags             = st.slider("🔝 top_k (теги)", 0, 100, preset["top_k"], key="top_k_tags")
+    presence_penalty_tags  = st.slider("⚖️ presence_penalty (теги)", 0.0, 2.0, preset["presence_penalty"], 0.01, key="presence_penalty_tags")
+    frequency_penalty_tags = st.slider("📉 frequency_penalty (теги)", 0.0, 2.0, preset["frequency_penalty"], 0.01, key="frequency_penalty_tags")
+    repetition_penalty_tags= st.slider("🔁 repetition_penalty (теги)", 0.0, 2.0, preset["repetition_penalty"], 0.01, key="repetition_penalty_tags")
 
-    # 3) Загрузка CSV с существующими тегами
-    uploaded = st.file_uploader("Загрузите CSV с колонкой tags", type="csv", key="tags_csv")
+    # 4) Загрузка CSV, где в колонке tag теги разделены '|'
+    uploaded = st.file_uploader("Загрузите CSV с колонкой tag (теги через '|')", type="csv", key="tags_csv")
     if uploaded:
         df_tags = pd.read_csv(uploaded)
-        if "tags" not in df_tags.columns:
-            st.error("В файле нет колонки 'tags'.")
+        if "tag" not in df_tags.columns:
+            st.error("В файле нет колонки 'tag'.")
             st.stop()
-        max_workers_tags = st.slider("Потоки для обработки", 1, 10, 5, key="max_workers_tags")
 
+        max_workers_tags = st.slider("Параллельных потоков", 1, 10, 5, key="max_workers_tags")
         if st.button("▶️ Обработать теги", key="process_tags"):
             def process_tags_row(row):
-                existing = [t.strip() for t in re.split(r'[;,]', str(row["tags"])) if t.strip()]
-                context  = row["tags"]
+                # разбираем существующие теги по '|'
+                existing = [t.strip() for t in str(row["tag"]).split("|") if t.strip()]
+                context  = row["tag"]
                 allowed  = ", ".join(user_tags)
-                sys = "You are an expert tag selector."
-                usr = f"""
+
+                system_msg = "You are an expert tag selector."
+                user_msg = f"""
 Allowed tags: {allowed}.
 Existing tags: {', '.join(existing)}.
 Context: {context}
@@ -1034,7 +1038,7 @@ Return only a comma-separated list of the 5 tags.
 """
                 resp = chat_completion_request(
                     api_key,
-                    [{"role":"system","content":sys}, {"role":"user","content":usr}],
+                    [{"role":"system","content":system_msg}, {"role":"user","content":user_msg}],
                     selected_model_tags,
                     max_tokens_tags,
                     temperature_tags,
@@ -1045,15 +1049,18 @@ Return only a comma-separated list of the 5 tags.
                     frequency_penalty_tags,
                     repetition_penalty_tags
                 )
+                # оставляем первые 5
                 return [t.strip() for t in custom_postprocess_text(resp).split(",")][:5]
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers_tags) as ex:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers_tags) as executor:
                 df_tags["final_5_tags"] = [
-                    ", ".join(lst) 
-                    for lst in ex.map(process_tags_row, [row for _, row in df_tags.iterrows()])
+                    ", ".join(tags) for tags in executor.map(process_tags_row, [row for _, row in df_tags.iterrows()])
                 ]
 
             st.success("✅ Теги сгенерированы!")
-            st.dataframe(df_tags.head(10))
+            st.dataframe(df_tags[["tag", "final_5_tags"]].head(10))
             csv_out = df_tags.to_csv(index=False).encode("utf-8")
             st.download_button("📥 Скачать CSV с тегами", data=csv_out, file_name="tags_with_5.csv", mime="text/csv")
+
+    elif user_tags:
+        st.info("Загрузите CSV для обработки тегов.")
