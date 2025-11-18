@@ -24,6 +24,42 @@ DEFAULT_API_KEY = "sk_MyidbhnT9jXzw-YDymhijjY8NF15O0Qy7C36etNTAxE"
 # Максимальное количество повторных попыток при 429 (Rate Limit)
 MAX_RETRIES = 3
 
+# --- Паттерны и словари для очистки текста ---
+EMOJI_PATTERN = re.compile(
+    "["
+    u"\U0001F600-\U0001F64F"
+    u"\U0001F300-\U0001F5FF"
+    u"\U0001F680-\U0001F6FF"
+    u"\U0001F1E0-\U0001F1FF"
+    "]+",
+    flags=re.UNICODE
+)
+
+HIEROGLYPH_PATTERN = re.compile(r'[\u4e00-\u9fff]+')
+FORBIDDEN_SYMBOLS_PATTERN = re.compile(r'[><"№;%*/\\{}]+')
+DOMAIN_PATTERN = re.compile(
+    r'(?:see\s+full\s+version[\s:,-]*)?(?:https?://)?[\w\-.]+(?:\.com|\.net)\S*',
+    flags=re.IGNORECASE
+)
+COMMENT_KEYWORDS = ["error", "note", "however", "sorry", "<tool>", "direct link", "i can't"]
+STOPWORD_REPLACEMENTS = {
+    "mother": "StepMother",
+    "mommy": "StepMommy",
+    "dad": "StepDad",
+    "daddy": "StepDaddy",
+    "father": "StepFather",
+    "brother": "StepBrother",
+    "bro": "StepBro",
+    "sister": "StepSister",
+    "sis": "StepSis",
+    "daughter": "StepDaughter",
+    "son": "StepSon"
+}
+STOPWORD_PATTERN = re.compile(
+    r'\b(' + '|'.join(STOPWORD_REPLACEMENTS.keys()) + r')\b',
+    flags=re.IGNORECASE
+)
+
 st.set_page_config(page_title="🧠 Novita AI Batch Processor", layout="wide")
 
 #######################################
@@ -44,17 +80,67 @@ def custom_postprocess_text(text: str) -> str:
     pattern_sentence = re.compile(r'(^|(?<=[.!?]\s))\s*(?:fucking|explicit|intense)[\s,:\-]+', flags=re.IGNORECASE)
     text = pattern_sentence.sub(r'\1', text)
     text = re.sub(r'\bF\*+\b', 'fuck', text, flags=re.IGNORECASE)
-    text = re.sub(r'[\u4e00-\u9fff]+', '', text)
-    emoji_pattern = re.compile("["
-                               u"\U0001F600-\U0001F64F"
-                               u"\U0001F300-\U0001F5FF"
-                               u"\U0001F680-\U0001F6FF"
-                               u"\U0001F1E0-\U0001F1FF"
-                               "]+", flags=re.UNICODE)
-    text = emoji_pattern.sub(r'', text)
+    text = HIEROGLYPH_PATTERN.sub('', text)
+    text = EMOJI_PATTERN.sub('', text)
     text = text.replace('"', '')
     text = re.sub(r'\s+', ' ', text).strip()
     return text
+
+
+def strip_commentary_phrases(text: str) -> str:
+    """Удаляет фрагменты, начинающиеся с указанных служебных слов (Error, Note и т.д.)."""
+    for keyword in COMMENT_KEYWORDS:
+        pattern = re.compile(rf'\b{re.escape(keyword)}\b.*', flags=re.IGNORECASE)
+        text = pattern.sub('', text)
+    return text
+
+
+def apply_stopword_replacements(text: str) -> str:
+    """Заменяет запрещённые родственные связи на step-аналоги."""
+    def repl(match: re.Match) -> str:
+        original = match.group(0)
+        replacement = STOPWORD_REPLACEMENTS[original.lower()]
+        if original.isupper():
+            return replacement.upper()
+        if original.istitle():
+            return replacement
+        if original.islower():
+            return replacement.lower()
+        return replacement
+
+    return STOPWORD_PATTERN.sub(repl, text)
+
+
+def remove_domains(text: str) -> str:
+    """Удаляет упоминания сайтов (.com, .net) и вводные фразы вроде 'See full version'."""
+    return DOMAIN_PATTERN.sub(' ', text)
+
+
+def fix_missing_spaces(text: str) -> str:
+    """
+    Восстанавливает пробелы между словами в простых случаях:
+    - слово слиплось из-за CamelCase
+    - буквы и цифры без пробелов
+    """
+    if not text:
+        return text
+    text = re.sub(r'(?<=[A-Za-zА-Яа-я])(?=[0-9])', ' ', text)
+    text = re.sub(r'(?<=[0-9])(?=[A-Za-zА-Яа-я])', ' ', text)
+    text = re.sub(r'(?<=[a-zа-я])(?=[A-ZА-Я])', ' ', text)
+    if ' ' not in text and len(text) > 15:
+        text = re.sub(r'([A-Za-zА-Яа-я]{3,})([A-Za-zА-Яа-я]{3,})', r'\1 \2', text)
+    return text
+
+
+def truncate_title(text: str, max_len: int = 100) -> str:
+    """Обрезает тайтл до max_len символов, стараясь завершить на границе слова."""
+    if len(text) <= max_len:
+        return text
+    truncated = text[:max_len].rstrip()
+    last_space = truncated.rfind(' ')
+    if last_space > 20:
+        truncated = truncated[:last_space]
+    return truncated.strip()
 
 def get_model_list(api_key: str):
     """Загружаем список доступных моделей через API Novita AI"""
@@ -390,11 +476,26 @@ def process_translation_file(
 # --- Функция для постобработки файла с удалением вредных паттернов ---
 def clean_text(text: str, harmful_patterns: list) -> str:
     """
-    Для каждого паттерна из списка удаляет его вхождения из текста.
+    Расширенная постобработка: удаление вредных паттернов, эмодзи, иероглифов,
+    запрещённых символов, доменных имён, служебных комментариев и применение
+    stop-замен родственных связей. Также пытается восстановить пробелы и
+    обрезает тайтлы длиннее 100 символов.
     """
+    if text is None:
+        text = ""
+    text = str(text)
     for pattern in harmful_patterns:
-        text = re.sub(re.escape(pattern), "", text, flags=re.IGNORECASE)
+        if pattern:
+            text = re.sub(re.escape(pattern), "", text, flags=re.IGNORECASE)
+    text = remove_domains(text)
+    text = strip_commentary_phrases(text)
+    text = apply_stopword_replacements(text)
+    text = HIEROGLYPH_PATTERN.sub('', text)
+    text = EMOJI_PATTERN.sub('', text)
+    text = FORBIDDEN_SYMBOLS_PATTERN.sub(' ', text)
+    text = fix_missing_spaces(text)
     text = re.sub(r'\s+', ' ', text).strip()
+    text = truncate_title(text)
     return text
 
 def process_postprocessing_file(df: pd.DataFrame, text_col: str, harmful_patterns: list):
