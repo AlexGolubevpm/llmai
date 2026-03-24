@@ -1,0 +1,86 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/client"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum JobType {
+  REWRITE
+  TRANSLATE
+  POSTPROCESS
+  AI_PROCESS
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model Job {
+  id            String    @id @default(cuid())
+  type          JobType
+  status        JobStatus @default(PENDING)
+  config        Json      // Model params, prompt, multiplier, etc.
+
+  inputFileUrl  String
+  outputFileUrl String?
+
+  totalRows     Int       @default(0)
+  processedRows Int       @default(0)
+  failedRows    Int       @default(0)
+  currentPass   Int       @default(1)
+  totalPasses   Int       @default(1)
+
+  errorLog      Json?     // [{row, error, retries}]
+
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([status])
+  @@index([type])
+  @@index([createdAt])
+}
+
+model Preset {
+  id                String   @id @default(cuid())
+  name              String   @unique
+  systemPrompt      String
+  maxTokens         Int
+  temperature       Float
+  topP              Float
+  minP              Float
+  topK              Int
+  presencePenalty   Float
+  frequencyPenalty  Float
+  repetitionPenalty Float
+  isDefault         Boolean  @default(false)
+  createdAt         DateTime @default(now())
+}
+
+model StopWord {
+  id          String   @id @default(cuid())
+  word        String   @unique
+  replacement String?  // null = remove, string = replace with
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+}
+
+model AllowedTag {
+  id       String @id @default(cuid())
+  name     String @unique
+  category String // e.g. "action", "body_type", "setting"
+}
+
+model AllowedCategory {
+  id   String @id @default(cuid())
+  name String @unique
+  slug String @unique
+}
