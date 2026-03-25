@@ -1,14 +1,19 @@
 import { type Job as BullJob } from "bullmq";
 import { prisma } from "@/lib/db";
 import { chatCompletion } from "@/lib/novita-client";
-import { analyzeThumbnail } from "@/lib/wd-tagger-client";
-import { postprocessLLMResponse, cleanText, type StopWordEntry } from "@/lib/text-processing";
+import { analyzeThumbnailsBatch } from "@/lib/wd-tagger-client";
+import {
+  postprocessLLMResponse,
+  cleanText,
+  type StopWordEntry,
+} from "@/lib/text-processing";
 import { publishProgress } from "@/lib/queue";
 import * as fs from "fs";
 import Papa from "papaparse";
-import type { JobConfig } from "@/types";
+import type { JobConfig, WDTaggerResult } from "@/types";
 
 const MAX_ROW_RETRIES = 3;
+const TAGGER_BATCH_SIZE = 10; // Process thumbnails in batches of 10
 
 export async function aiProcessProcessor(job: BullJob) {
   const { jobId } = job.data;
@@ -34,9 +39,6 @@ export async function aiProcessProcessor(job: BullJob) {
   ).map((w) => ({ word: w.word, replacement: w.replacement }));
 
   const totalRows = rows.length;
-  // 3 steps per row
-  const totalSteps = totalRows * 3;
-  let completedSteps = 0;
 
   await prisma.job.update({
     where: { id: jobId },
@@ -46,54 +48,77 @@ export async function aiProcessProcessor(job: BullJob) {
   const errorLog: { row: number; error: string; retries: number }[] = [];
   const startTime = Date.now();
 
+  // ====== STEP 1: WD Tagger — Batch analyze all thumbnails ======
+  await prisma.job.update({ where: { id: jobId }, data: { currentPass: 1 } });
+
+  const thumbnailUrls = rows.map(
+    (r) => r["thumbnail_url"] || r["thumb_url"] || ""
+  );
+  const taggerResults: (WDTaggerResult | null)[] = [];
+
+  // Process in batches to avoid overwhelming HuggingFace
+  for (let i = 0; i < thumbnailUrls.length; i += TAGGER_BATCH_SIZE) {
+    const batchUrls = thumbnailUrls.slice(i, i + TAGGER_BATCH_SIZE);
+    const batchResults = await analyzeThumbnailsBatch(batchUrls, {
+      onProgress: (done) => {
+        const totalDone = i + done;
+        publishProgress(jobId, {
+          status: "RUNNING",
+          processedRows: totalDone,
+          totalRows,
+          failedRows: errorLog.length,
+          currentPass: 1,
+          totalPasses: 3,
+          eta: estimateEta(startTime, totalDone, totalRows * 3),
+          speed: calcSpeed(startTime, totalDone),
+        });
+      },
+    });
+
+    taggerResults.push(...batchResults);
+
+    // Update DB progress
+    await prisma.job.update({
+      where: { id: jobId },
+      data: { processedRows: Math.min(i + TAGGER_BATCH_SIZE, totalRows) },
+    });
+  }
+
+  // Store Step 1 results into rows
   for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-    const thumbnailUrl = row["thumbnail_url"] || row["thumb_url"] || "";
-    const title = row["title"] || "";
-
-    // ====== STEP 1: WD Tagger — Analyze thumbnail ======
-    let aiRawTags = "";
-    let rating = "";
-    let detectedTags: string[] = [];
-
-    try {
-      if (thumbnailUrl) {
-        let taggerResult = null;
-        for (let retry = 0; retry < MAX_ROW_RETRIES; retry++) {
-          try {
-            taggerResult = await analyzeThumbnail(thumbnailUrl);
-            break;
-          } catch (err) {
-            if (retry === MAX_ROW_RETRIES - 1) {
-              errorLog.push({ row: i, error: `WD Tagger: ${(err as Error).message}`, retries: retry + 1 });
-            }
-            await new Promise((r) => setTimeout(r, Math.pow(2, retry) * 1000));
-          }
-        }
-
-        if (taggerResult) {
-          detectedTags = taggerResult.tags;
-          aiRawTags = taggerResult.tags.join(", ");
-          rating = taggerResult.rating[0]?.label || "unknown";
-        }
+    const result = taggerResults[i];
+    if (result) {
+      rows[i]["ai_raw_tags"] = result.tags.join(", ");
+      rows[i]["rating"] = result.rating[0]?.label || "unknown";
+    } else {
+      rows[i]["ai_raw_tags"] = "";
+      rows[i]["rating"] = "unknown";
+      if (thumbnailUrls[i]) {
+        errorLog.push({
+          row: i,
+          error: "WD Tagger: failed after retries",
+          retries: 3,
+        });
       }
-    } catch (err) {
-      errorLog.push({ row: i, error: `Step 1: ${(err as Error).message}`, retries: 0 });
     }
+  }
 
-    row["ai_raw_tags"] = aiRawTags;
-    row["rating"] = rating;
-    completedSteps++;
+  // ====== STEP 2: Tag & Category Mapping (LLM) — parallel in chunks ======
+  await prisma.job.update({ where: { id: jobId }, data: { currentPass: 2 } });
 
-    // ====== STEP 2: Tag & Category Mapping (LLM) ======
-    let mappedTags = "";
-    let mappedCategories = "";
+  const allowedTagNames = allowedTags.map((t) => t.name).join(", ");
+  const allowedCatNames = allowedCategories.map((c) => c.name).join(", ");
+  const maxWorkers = config.maxWorkers || 5;
+  const chunkSize = config.chunkSize || 10;
 
-    try {
-      const allowedTagNames = allowedTags.map((t) => t.name).join(", ");
-      const allowedCatNames = allowedCategories.map((c) => c.name).join(", ");
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const chunk = rows.slice(i, Math.min(i + chunkSize, rows.length));
 
-      const mappingPrompt = `Given these detected tags from image analysis: [${detectedTags.join(", ")}]
+    const promises = chunk.map(async (row, idx) => {
+      const globalIdx = i + idx;
+      const detectedTags = row["ai_raw_tags"] || "";
+
+      const mappingPrompt = `Given these detected tags from image analysis: [${detectedTags}]
 Existing tags from feed: [${row["tags"] || ""}]
 Existing categories from feed: [${row["categories"] || ""}]
 
@@ -105,12 +130,12 @@ Return ONLY in this format:
 TAGS: tag1, tag2, tag3, tag4, tag5
 CATEGORIES: cat1, cat2`;
 
-      let mappingResult = "";
       for (let retry = 0; retry < MAX_ROW_RETRIES; retry++) {
         try {
-          mappingResult = await chatCompletion(apiKey, {
+          const result = await chatCompletion(apiKey, {
             model: config.model || "meta-llama/llama-3.1-8b-instruct",
-            systemPrompt: "You are an expert tag and category mapper. Follow instructions exactly.",
+            systemPrompt:
+              "You are an expert tag and category mapper. Follow instructions exactly.",
             userPrompt: mappingPrompt,
             maxTokens: 200,
             temperature: 0.3,
@@ -121,36 +146,68 @@ CATEGORIES: cat1, cat2`;
             frequencyPenalty: 0.0,
             repetitionPenalty: 1.0,
           });
-          break;
+
+          const tagsMatch = result.match(/TAGS:\s*(.+)/i);
+          const catsMatch = result.match(/CATEGORIES:\s*(.+)/i);
+          row["mapped_tags"] = tagsMatch ? tagsMatch[1].trim() : "";
+          row["mapped_categories"] = catsMatch ? catsMatch[1].trim() : "";
+          return;
         } catch (err) {
           if (retry === MAX_ROW_RETRIES - 1) {
-            errorLog.push({ row: i, error: `Step 2: ${(err as Error).message}`, retries: retry + 1 });
+            errorLog.push({
+              row: globalIdx,
+              error: `Step 2: ${(err as Error).message}`,
+              retries: retry + 1,
+            });
+            row["mapped_tags"] = "";
+            row["mapped_categories"] = "";
           }
-          await new Promise((r) => setTimeout(r, Math.pow(2, retry) * 1000));
+          await new Promise((r) =>
+            setTimeout(r, Math.pow(2, retry) * 1000)
+          );
         }
       }
+    });
 
-      // Parse mapping result
-      const tagsMatch = mappingResult.match(/TAGS:\s*(.+)/i);
-      const catsMatch = mappingResult.match(/CATEGORIES:\s*(.+)/i);
-      mappedTags = tagsMatch ? tagsMatch[1].trim() : "";
-      mappedCategories = catsMatch ? catsMatch[1].trim() : "";
-    } catch (err) {
-      errorLog.push({ row: i, error: `Step 2: ${(err as Error).message}`, retries: 0 });
+    // Process with concurrency limit
+    for (let b = 0; b < promises.length; b += maxWorkers) {
+      await Promise.all(promises.slice(b, b + maxWorkers));
     }
 
-    row["mapped_tags"] = mappedTags;
-    row["mapped_categories"] = mappedCategories;
-    completedSteps++;
+    const step2Done = Math.min(i + chunkSize, totalRows);
+    await prisma.job.update({
+      where: { id: jobId },
+      data: { processedRows: step2Done },
+    });
+    await publishProgress(jobId, {
+      status: "RUNNING",
+      processedRows: step2Done,
+      totalRows,
+      failedRows: errorLog.length,
+      currentPass: 2,
+      totalPasses: 3,
+      eta: estimateEta(startTime, totalRows + step2Done, totalRows * 3),
+      speed: calcSpeed(startTime, totalRows + step2Done),
+    });
+  }
 
-    // ====== STEP 3: SEO Title & Description Generation (LLM) ======
-    try {
+  // ====== STEP 3: SEO Title & Description Generation (LLM) — parallel in chunks ======
+  await prisma.job.update({ where: { id: jobId }, data: { currentPass: 3 } });
+
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const chunk = rows.slice(i, Math.min(i + chunkSize, rows.length));
+
+    const promises = chunk.map(async (row, idx) => {
+      const globalIdx = i + idx;
+      const title = row["title"] || "";
+      row["original_title"] = title;
+
       const seoPrompt = `Based on the following information, generate an SEO-optimized NSFW title and description.
 
 Original title: ${title}
-Tags: ${mappedTags}
-Categories: ${mappedCategories}
-Content rating: ${rating}
+Tags: ${row["mapped_tags"] || ""}
+Categories: ${row["mapped_categories"] || ""}
+Content rating: ${row["rating"] || ""}
 
 Requirements:
 - SEO title: max 90 characters, include relevant keywords, engaging and descriptive
@@ -161,12 +218,12 @@ Return ONLY in this format:
 TITLE: your seo title here
 DESCRIPTION: your seo description here`;
 
-      let seoResult = "";
       for (let retry = 0; retry < MAX_ROW_RETRIES; retry++) {
         try {
-          seoResult = await chatCompletion(apiKey, {
+          const result = await chatCompletion(apiKey, {
             model: config.model || "meta-llama/llama-3.1-8b-instruct",
-            systemPrompt: "You are an expert SEO content writer specializing in adult content. Generate compelling, search-optimized titles and descriptions.",
+            systemPrompt:
+              "You are an expert SEO content writer specializing in adult content. Generate compelling, search-optimized titles and descriptions.",
             userPrompt: seoPrompt,
             maxTokens: config.maxTokens || 300,
             temperature: config.temperature || 0.7,
@@ -177,68 +234,66 @@ DESCRIPTION: your seo description here`;
             frequencyPenalty: config.frequencyPenalty || 0.4,
             repetitionPenalty: config.repetitionPenalty || 1.2,
           });
-          break;
+
+          const titleMatch = result.match(/TITLE:\s*(.+)/i);
+          const descMatch = result.match(/DESCRIPTION:\s*(.+)/i);
+
+          let seoTitle = titleMatch ? titleMatch[1].trim() : title;
+          let seoDesc = descMatch ? descMatch[1].trim() : "";
+
+          seoTitle = postprocessLLMResponse(seoTitle);
+          seoDesc = postprocessLLMResponse(seoDesc);
+          if (stopWords.length > 0) {
+            seoTitle = cleanText(seoTitle, stopWords);
+            seoDesc = cleanText(seoDesc, stopWords);
+          }
+
+          row["seo_title"] = seoTitle.slice(0, 90);
+          row["seo_description"] = seoDesc.slice(0, 160);
+          return;
         } catch (err) {
           if (retry === MAX_ROW_RETRIES - 1) {
-            errorLog.push({ row: i, error: `Step 3: ${(err as Error).message}`, retries: retry + 1 });
+            errorLog.push({
+              row: globalIdx,
+              error: `Step 3: ${(err as Error).message}`,
+              retries: retry + 1,
+            });
+            row["seo_title"] = title;
+            row["seo_description"] = "";
           }
-          await new Promise((r) => setTimeout(r, Math.pow(2, retry) * 1000));
+          await new Promise((r) =>
+            setTimeout(r, Math.pow(2, retry) * 1000)
+          );
         }
       }
-
-      // Parse SEO result
-      const titleMatch = seoResult.match(/TITLE:\s*(.+)/i);
-      const descMatch = seoResult.match(/DESCRIPTION:\s*(.+)/i);
-
-      let seoTitle = titleMatch ? titleMatch[1].trim() : title;
-      let seoDesc = descMatch ? descMatch[1].trim() : "";
-
-      // Post-process
-      seoTitle = postprocessLLMResponse(seoTitle);
-      seoDesc = postprocessLLMResponse(seoDesc);
-      if (stopWords.length > 0) {
-        seoTitle = cleanText(seoTitle, stopWords);
-        seoDesc = cleanText(seoDesc, stopWords);
-      }
-
-      row["seo_title"] = seoTitle.slice(0, 90);
-      row["seo_description"] = seoDesc.slice(0, 160);
-    } catch (err) {
-      errorLog.push({ row: i, error: `Step 3: ${(err as Error).message}`, retries: 0 });
-      row["seo_title"] = title;
-      row["seo_description"] = "";
-    }
-
-    completedSteps++;
-    row["original_title"] = title;
-
-    // Update progress
-    const elapsed = (Date.now() - startTime) / 1000;
-    const speed = completedSteps / elapsed;
-    const remaining = (totalSteps - completedSteps) / speed;
-
-    await prisma.job.update({
-      where: { id: jobId },
-      data: {
-        processedRows: i + 1,
-        failedRows: errorLog.length,
-      },
     });
 
+    for (let b = 0; b < promises.length; b += maxWorkers) {
+      await Promise.all(promises.slice(b, b + maxWorkers));
+    }
+
+    const step3Done = Math.min(i + chunkSize, totalRows);
+    await prisma.job.update({
+      where: { id: jobId },
+      data: { processedRows: step3Done },
+    });
     await publishProgress(jobId, {
       status: "RUNNING",
-      processedRows: i + 1,
+      processedRows: step3Done,
       totalRows,
       failedRows: errorLog.length,
-      currentPass: Math.ceil(completedSteps / totalRows),
+      currentPass: 3,
       totalPasses: 3,
-      eta: Math.round(remaining),
-      speed: Math.round(speed * 10) / 10,
+      eta: estimateEta(startTime, totalRows * 2 + step3Done, totalRows * 3),
+      speed: calcSpeed(startTime, totalRows * 2 + step3Done),
     });
   }
 
   // Write output
-  const outputPath = dbJob.inputFileUrl.replace(/(\.\w+)$/, `_ai_processed$1`);
+  const outputPath = dbJob.inputFileUrl.replace(
+    /(\.\w+)$/,
+    `_ai_processed$1`
+  );
   fs.writeFileSync(outputPath, Papa.unparse(rows), "utf-8");
 
   await prisma.job.update({
@@ -252,5 +307,26 @@ DESCRIPTION: your seo description here`;
     },
   });
 
-  await publishProgress(jobId, { status: "COMPLETED", processedRows: totalRows, totalRows });
+  await publishProgress(jobId, {
+    status: "COMPLETED",
+    processedRows: totalRows,
+    totalRows,
+  });
+}
+
+function estimateEta(
+  startTime: number,
+  completedSteps: number,
+  totalSteps: number
+): number {
+  const elapsed = (Date.now() - startTime) / 1000;
+  if (completedSteps === 0) return 0;
+  const speed = completedSteps / elapsed;
+  return Math.round((totalSteps - completedSteps) / speed);
+}
+
+function calcSpeed(startTime: number, completedSteps: number): number {
+  const elapsed = (Date.now() - startTime) / 1000;
+  if (elapsed === 0) return 0;
+  return Math.round((completedSteps / elapsed) * 10) / 10;
 }
