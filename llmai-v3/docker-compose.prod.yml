@@ -1,0 +1,59 @@
+version: "3.8"
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: llmai-app
+    restart: always
+    ports:
+      - "3000:3000"
+    env_file: .env
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./uploads:/app/uploads
+      - ./results:/app/results
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: llmai-worker
+    restart: always
+    env_file: .env
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./uploads:/app/uploads
+      - ./results:/app/results
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: llmai-postgres
+    restart: always
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: llmai
+      POSTGRES_USER: llmai
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-llmai_secret}
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    container_name: llmai-redis
+    restart: always
+    volumes:
+      - redisdata:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+
+volumes:
+  pgdata:
+  redisdata:
