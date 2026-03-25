@@ -1,21 +1,27 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Trash2, Plus } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Trash2, Plus, Search, Ban } from "lucide-react";
 import { toast } from "sonner";
+import { PageHeader } from "@/components/layout/page-header";
+import { EmptyState } from "@/components/shared/empty-state";
+import { pageVariants, staggerItem } from "@/lib/animations";
 import type { StopWord } from "@/types";
 
 export default function StopwordsPage() {
   const [stopwords, setStopwords] = useState<StopWord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
   const [newWord, setNewWord] = useState("");
   const [newReplacement, setNewReplacement] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [dialogOpen, setDialogOpen] = useState(false);
 
   async function fetchStopwords() {
     setLoading(true);
@@ -23,7 +29,7 @@ export default function StopwordsPage() {
       const resp = await fetch("/api/stopwords");
       const data = await resp.json();
       setStopwords(data.stopwords || []);
-    } catch { /* ignore */ }
+    } catch { toast.error("Не удалось загрузить стоп-слова"); }
     finally { setLoading(false); }
   }
 
@@ -39,6 +45,7 @@ export default function StopwordsPage() {
       });
       setNewWord("");
       setNewReplacement("");
+      setDialogOpen(false);
       fetchStopwords();
       toast.success("Стоп-слово добавлено");
     } catch (err) { toast.error((err as Error).message); }
@@ -46,73 +53,113 @@ export default function StopwordsPage() {
 
   async function deleteStopword(id: string) {
     await fetch(`/api/stopwords?id=${id}`, { method: "DELETE" });
-    fetchStopwords();
+    setStopwords((sw) => sw.filter((s) => s.id !== id));
+    toast.success("Удалено");
   }
 
   async function toggleStopword(id: string, isActive: boolean) {
+    setStopwords((sw) => sw.map((s) => (s.id === id ? { ...s, isActive } : s)));
     await fetch("/api/stopwords", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id, isActive }),
     });
-    fetchStopwords();
   }
 
+  const filtered = search
+    ? stopwords.filter((sw) => sw.word.toLowerCase().includes(search.toLowerCase()))
+    : stopwords;
+
   return (
-    <div className="space-y-6">
-      <h1 className="text-3xl font-bold">Стоп-слова</h1>
+    <motion.div {...pageVariants} className="space-y-8">
+      <PageHeader
+        title="Стоп-слова"
+        description="Управление заменами при обработке текста"
+        actions={
+          <>
+            <Button size="sm" className="gap-2" onClick={() => setDialogOpen(true)}>
+              <Plus className="h-3.5 w-3.5" /> Добавить
+            </Button>
+            <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Добавить стоп-слово</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-4 pt-4">
+                <div>
+                  <Label>Слово</Label>
+                  <Input value={newWord} onChange={(e) => setNewWord(e.target.value)} placeholder="mother" className="mt-1.5" />
+                </div>
+                <div>
+                  <Label>Замена (пусто = удалить)</Label>
+                  <Input value={newReplacement} onChange={(e) => setNewReplacement(e.target.value)} placeholder="StepMother" className="mt-1.5" />
+                </div>
+                <Button onClick={addStopword} className="w-full">Добавить</Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+          </>
+        }
+      />
 
-      <Card>
-        <CardHeader><CardTitle>Добавить стоп-слово</CardTitle></CardHeader>
-        <CardContent>
-          <div className="flex gap-4 items-end">
-            <div className="flex-1">
-              <Label>Слово</Label>
-              <Input value={newWord} onChange={(e) => setNewWord(e.target.value)} placeholder="mother" />
-            </div>
-            <div className="flex-1">
-              <Label>Замена (пусто = удалить)</Label>
-              <Input value={newReplacement} onChange={(e) => setNewReplacement(e.target.value)} placeholder="StepMother" />
-            </div>
-            <Button onClick={addStopword}><Plus className="h-4 w-4 mr-2" /> Добавить</Button>
+      <div className="rounded-xl border bg-[var(--surface)] shadow-card overflow-hidden">
+        <div className="border-b p-4">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[var(--text-muted)]" />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Поиск по слову..."
+              className="pl-9"
+            />
           </div>
-        </CardContent>
-      </Card>
+        </div>
 
-      <Card>
-        <CardHeader><CardTitle>Список стоп-слов ({stopwords.length})</CardTitle></CardHeader>
-        <CardContent>
+        {loading ? (
+          <div className="p-6 space-y-3">
+            {[...Array(5)].map((_, i) => <div key={i} className="h-10 animate-shimmer rounded-lg" />)}
+          </div>
+        ) : filtered.length === 0 ? (
+          <EmptyState
+            icon={<Ban className="h-6 w-6" />}
+            title={search ? `Ничего не найдено по "${search}"` : "Нет стоп-слов"}
+            description={search ? undefined : "Добавьте стоп-слова для автоматической очистки текста"}
+          />
+        ) : (
           <Table>
             <TableHeader>
-              <TableRow>
-                <TableHead>Активно</TableHead>
-                <TableHead>Слово</TableHead>
-                <TableHead>Замена</TableHead>
-                <TableHead></TableHead>
+              <TableRow className="hover:bg-transparent">
+                <TableHead className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)] w-16">Вкл</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Слово</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Замена</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)] w-16"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {stopwords.map((sw) => (
-                <TableRow key={sw.id}>
+              {filtered.map((sw, i) => (
+                <motion.tr key={sw.id} variants={staggerItem} initial="initial" animate="animate" transition={{ delay: i * 0.02 }} className="border-b last:border-0 hover:bg-[var(--surface-raised)]">
                   <TableCell>
                     <Switch checked={sw.isActive} onCheckedChange={(v) => toggleStopword(sw.id, v)} />
                   </TableCell>
-                  <TableCell className="font-mono">{sw.word}</TableCell>
-                  <TableCell className="font-mono text-muted-foreground">{sw.replacement || "(удалить)"}</TableCell>
+                  <TableCell className="font-mono text-sm">{sw.word}</TableCell>
+                  <TableCell className="font-mono text-sm text-[var(--text-muted)]">{sw.replacement || "(удалить)"}</TableCell>
                   <TableCell>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 text-red-500" onClick={() => deleteStopword(sw.id)}>
-                      <Trash2 className="h-4 w-4" />
+                    <Button variant="ghost" size="icon" className="h-7 w-7 text-[var(--error)]" onClick={() => deleteStopword(sw.id)} aria-label="Удалить">
+                      <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </TableCell>
-                </TableRow>
+                </motion.tr>
               ))}
-              {stopwords.length === 0 && !loading && (
-                <TableRow><TableCell colSpan={4} className="text-center text-muted-foreground py-8">Нет стоп-слов</TableCell></TableRow>
-              )}
             </TableBody>
           </Table>
-        </CardContent>
-      </Card>
-    </div>
+        )}
+
+        {!loading && stopwords.length > 0 && (
+          <div className="border-t px-4 py-3 text-xs text-[var(--text-muted)]">
+            {stopwords.length} стоп-слов ({stopwords.filter((s) => s.isActive).length} активных)
+          </div>
+        )}
+      </div>
+    </motion.div>
   );
 }

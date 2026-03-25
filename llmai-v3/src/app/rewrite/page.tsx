@@ -1,21 +1,22 @@
 "use client";
 
 import { useState } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { FileUpload } from "@/components/file-upload";
 import { ModelSelector } from "@/components/model-selector";
 import { PresetSelector } from "@/components/preset-selector";
 import { JobProgress } from "@/components/job-progress";
+import { PageHeader } from "@/components/layout/page-header";
 import type { JobConfig } from "@/types";
 import { Play } from "lucide-react";
 import { toast } from "sonner";
+import { pageVariants } from "@/lib/animations";
 
 export default function RewritePage() {
   const [fileUrl, setFileUrl] = useState("");
@@ -77,8 +78,11 @@ export default function RewritePage() {
   }
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-3xl font-bold">Массовый рерайт</h1>
+    <motion.div {...pageVariants} className="space-y-8">
+      <PageHeader
+        title="Массовый рерайт"
+        description="Загрузите файл, настройте параметры и запустите рерайт с множителем"
+      />
 
       {activeJobId && (
         <JobProgress
@@ -88,88 +92,114 @@ export default function RewritePage() {
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Left column */}
         <div className="space-y-6">
-          <Card>
-            <CardHeader><CardTitle>Файл</CardTitle></CardHeader>
-            <CardContent className="space-y-4">
-              <FileUpload
-                onUpload={(data) => {
-                  setFileUrl(data.fileUrl);
-                  setLineCount(data.lineCount);
-                }}
-              />
-              {lineCount > 0 && <p className="text-sm text-muted-foreground">Строк: {lineCount}</p>}
-              <div>
-                <Label>Колонка для рерайта</Label>
-                <Input value={titleCol} onChange={(e) => setTitleCol(e.target.value)} />
-              </div>
-            </CardContent>
-          </Card>
+          <div className="rounded-xl border bg-[var(--surface)] p-6 space-y-5">
+            <h2 className="text-[15px] font-medium">Файл</h2>
+            <FileUpload
+              onUpload={(data) => {
+                setFileUrl(data.fileUrl);
+                setLineCount(data.lineCount);
+              }}
+            />
+            {lineCount > 0 && (
+              <p className="text-xs text-[var(--text-muted)]">
+                {lineCount.toLocaleString()} строк
+                {lineCount >= 50 && " — будет использован Batch API"}
+              </p>
+            )}
+            <div>
+              <Label className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">
+                Колонка для рерайта
+              </Label>
+              <Input value={titleCol} onChange={(e) => setTitleCol(e.target.value)} className="mt-1.5" />
+            </div>
+          </div>
 
-          <Card>
-            <CardHeader><CardTitle>Настройки рерайта</CardTitle></CardHeader>
-            <CardContent className="space-y-4">
-              <div>
-                <Label>Промпт</Label>
-                <Textarea
-                  value={userPrompt}
-                  onChange={(e) => setUserPrompt(e.target.value)}
-                  placeholder="Введите промпт для рерайта..."
-                  rows={3}
-                />
+          <div className="rounded-xl border bg-[var(--surface)] p-6 space-y-5">
+            <h2 className="text-[15px] font-medium">Настройки рерайта</h2>
+            <div>
+              <Label className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">
+                Промпт
+              </Label>
+              <Textarea
+                value={userPrompt}
+                onChange={(e) => setUserPrompt(e.target.value)}
+                placeholder="Введите промпт для рерайта..."
+                rows={3}
+                className="mt-1.5"
+              />
+            </div>
+
+            <div>
+              <div className="flex items-baseline justify-between mb-2">
+                <Label className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">
+                  Множитель
+                </Label>
+                <span className="inline-flex items-center rounded-md bg-[var(--accent-blue-light)] px-2 py-0.5 text-xs font-semibold text-[var(--accent-blue)]">
+                  x{multiplier}
+                </span>
               </div>
-              <div>
-                <Label>Множитель: x{multiplier}</Label>
-                <Slider
-                  value={[multiplier]}
-                  onValueChange={(v) => setMultiplier(typeof v === "number" ? v : v[0])}
-                  min={1}
-                  max={10}
-                  step={1}
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                  Файл будет переписан {multiplier} раз{multiplier > 1 ? ". Каждый проход берёт результат предыдущего." : "."}
-                </p>
+              <Slider
+                value={[multiplier]}
+                onValueChange={(v) => setMultiplier(typeof v === "number" ? v : v[0])}
+                min={1}
+                max={10}
+                step={1}
+              />
+              <p className="text-xs text-[var(--text-muted)] mt-1.5">
+                {multiplier > 1
+                  ? `Файл будет переписан ${multiplier} раз. Каждый проход берёт результат предыдущего.`
+                  : "Одиночный рерайт."}
+              </p>
+            </div>
+
+            <div>
+              <div className="flex items-baseline justify-between mb-2">
+                <Label className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">
+                  Параллельные потоки
+                </Label>
+                <span className="text-xs font-mono text-[var(--text-secondary)]">{maxWorkers}</span>
               </div>
-              <div>
-                <Label>Потоки: {maxWorkers}</Label>
-                <Slider
-                  value={[maxWorkers]}
-                  onValueChange={(v) => setMaxWorkers(typeof v === "number" ? v : v[0])}
-                  min={1}
-                  max={20}
-                  step={1}
-                />
-              </div>
-              <div className="flex items-center gap-2">
-                <Switch checked={applyStopWords} onCheckedChange={setApplyStopWords} />
-                <Label>Применять стоп-слова после каждого прохода</Label>
-              </div>
-            </CardContent>
-          </Card>
+              <Slider
+                value={[maxWorkers]}
+                onValueChange={(v) => setMaxWorkers(typeof v === "number" ? v : v[0])}
+                min={1}
+                max={20}
+                step={1}
+              />
+            </div>
+
+            <div className="flex items-center justify-between rounded-lg bg-[var(--surface-raised)] px-4 py-3">
+              <Label className="text-sm">Применять стоп-слова после каждого прохода</Label>
+              <Switch checked={applyStopWords} onCheckedChange={setApplyStopWords} />
+            </div>
+          </div>
         </div>
 
+        {/* Right column */}
         <div className="space-y-6">
-          <Card>
-            <CardHeader><CardTitle>Модель</CardTitle></CardHeader>
-            <CardContent>
-              <ModelSelector value={model} onChange={setModel} />
-            </CardContent>
-          </Card>
+          <div className="rounded-xl border bg-[var(--surface)] p-6 space-y-5">
+            <h2 className="text-[15px] font-medium">Модель</h2>
+            <ModelSelector value={model} onChange={setModel} />
+          </div>
 
-          <Card>
-            <CardHeader><CardTitle>Параметры генерации</CardTitle></CardHeader>
-            <CardContent>
-              <PresetSelector value={config} onChange={setConfig} />
-            </CardContent>
-          </Card>
+          <div className="rounded-xl border bg-[var(--surface)] p-6 space-y-5">
+            <h2 className="text-[15px] font-medium">Параметры генерации</h2>
+            <PresetSelector value={config} onChange={setConfig} />
+          </div>
         </div>
       </div>
 
-      <Button size="lg" onClick={startJob} disabled={submitting || !fileUrl}>
-        <Play className="h-4 w-4 mr-2" />
+      <Button
+        size="lg"
+        onClick={startJob}
+        disabled={submitting || !fileUrl}
+        className="w-full h-12 text-sm font-medium gap-2"
+      >
+        <Play className="h-4 w-4" />
         {submitting ? "Создание задачи..." : `Запустить рерайт x${multiplier}`}
       </Button>
-    </div>
+    </motion.div>
   );
 }
