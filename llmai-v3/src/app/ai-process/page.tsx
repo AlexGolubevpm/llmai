@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
@@ -9,9 +9,18 @@ import { FileUpload } from "@/components/file-upload";
 import { ModelSelector } from "@/components/model-selector";
 import { PresetSelector } from "@/components/preset-selector";
 import { JobProgress } from "@/components/job-progress";
+import { PageHeader } from "@/components/layout/page-header";
 import type { JobConfig } from "@/types";
-import { Bot, Play } from "lucide-react";
+import { Play, Image, Tags, PenLine, ArrowRight } from "lucide-react";
 import { toast } from "sonner";
+import { pageVariants } from "@/lib/animations";
+import { cn } from "@/lib/utils";
+
+const STEPS = [
+  { icon: Image, label: "WD Tagger", desc: "Анализ тумбы — теги + рейтинг" },
+  { icon: Tags, label: "Tag Mapping", desc: "Маппинг на разрешённые теги из БД" },
+  { icon: PenLine, label: "SEO Generation", desc: "Title + Description под SEO" },
+];
 
 export default function AIProcessPage() {
   const [fileUrl, setFileUrl] = useState("");
@@ -19,9 +28,7 @@ export default function AIProcessPage() {
   const [model, setModel] = useState("meta-llama/llama-3.1-8b-instruct");
   const [config, setConfig] = useState<JobConfig>({
     systemPrompt: "You are an expert SEO content writer.",
-    maxTokens: 300,
-    temperature: 0.7,
-    topP: 1.0, minP: 0.0, topK: 40,
+    maxTokens: 300, temperature: 0.7, topP: 1.0, minP: 0.0, topK: 40,
     presencePenalty: 0.2, frequencyPenalty: 0.4, repetitionPenalty: 1.2,
   });
   const [maxWorkers, setMaxWorkers] = useState(3);
@@ -50,59 +57,76 @@ export default function AIProcessPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <Bot className="h-8 w-8 text-primary" />
-        <h1 className="text-3xl font-bold">AI Process 3.0</h1>
-      </div>
+    <motion.div {...pageVariants} className="space-y-8">
+      <PageHeader title="AI Process 3.0" description="3-шаговый pipeline: анализ изображений → маппинг тегов → SEO-генерация" />
 
-      <Card>
-        <CardContent className="pt-6">
-          <div className="grid grid-cols-3 gap-4 text-center text-sm">
-            <div className="rounded-lg border p-4">
-              <div className="font-bold text-primary mb-1">Шаг 1</div>
-              <div className="text-muted-foreground">WD Tagger анализирует тумбу → теги + рейтинг</div>
+      {/* Pipeline visualization */}
+      <div className="rounded-xl border bg-[var(--surface)] p-6">
+        <div className="flex items-center justify-between">
+          {STEPS.map((step, i) => (
+            <div key={step.label} className="flex items-center gap-4 flex-1">
+              <div className="flex items-center gap-3 flex-1">
+                <div className={cn(
+                  "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl",
+                  i === 0 ? "bg-blue-50 text-blue-600" :
+                  i === 1 ? "bg-purple-50 text-purple-600" :
+                  "bg-green-50 text-green-600"
+                )}>
+                  <step.icon className="h-5 w-5" />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">
+                    Шаг {i + 1}
+                  </div>
+                  <div className="text-sm font-medium truncate">{step.label}</div>
+                  <div className="text-xs text-[var(--text-muted)] truncate hidden sm:block">{step.desc}</div>
+                </div>
+              </div>
+              {i < STEPS.length - 1 && (
+                <ArrowRight className="h-4 w-4 text-[var(--text-muted)] shrink-0 hidden md:block" />
+              )}
             </div>
-            <div className="rounded-lg border p-4">
-              <div className="font-bold text-primary mb-1">Шаг 2</div>
-              <div className="text-muted-foreground">LLM маппит теги на разрешённые из БД</div>
-            </div>
-            <div className="rounded-lg border p-4">
-              <div className="font-bold text-primary mb-1">Шаг 3</div>
-              <div className="text-muted-foreground">LLM генерирует SEO title + description</div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+          ))}
+        </div>
+      </div>
 
       {activeJobId && <JobProgress jobId={activeJobId} onComplete={() => toast.success("AI Process завершён!")} />}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="space-y-6">
-          <Card>
-            <CardHeader><CardTitle>Фид (CSV)</CardTitle></CardHeader>
-            <CardContent className="space-y-4">
-              <FileUpload onUpload={(data) => { setFileUrl(data.fileUrl); setLineCount(data.lineCount); }} />
-              {lineCount > 0 && <p className="text-sm text-muted-foreground">Строк: {lineCount}</p>}
-              <p className="text-xs text-muted-foreground">
-                Ожидаемые колонки: <code>thumbnail_url</code>, <code>title</code>, <code>tags</code>, <code>categories</code>, <code>video_url</code>
+          <div className="rounded-xl border bg-[var(--surface)] p-6 space-y-5">
+            <h2 className="text-[15px] font-medium">Фид (CSV)</h2>
+            <FileUpload onUpload={(data) => { setFileUrl(data.fileUrl); setLineCount(data.lineCount); }} />
+            {lineCount > 0 && <p className="text-xs text-[var(--text-muted)]">{lineCount.toLocaleString()} строк</p>}
+            <div className="rounded-lg bg-[var(--surface-raised)] px-4 py-3">
+              <p className="text-xs text-[var(--text-muted)]">
+                Ожидаемые колонки: <code className="font-mono text-[var(--text-secondary)]">thumbnail_url</code>, <code className="font-mono text-[var(--text-secondary)]">title</code>, <code className="font-mono text-[var(--text-secondary)]">tags</code>, <code className="font-mono text-[var(--text-secondary)]">categories</code>, <code className="font-mono text-[var(--text-secondary)]">video_url</code>
               </p>
-              <div>
-                <Label>Потоки: {maxWorkers}</Label>
-                <Slider value={[maxWorkers]} onValueChange={(v) => setMaxWorkers(typeof v === "number" ? v : v[0])} min={1} max={10} step={1} />
+            </div>
+            <div>
+              <div className="flex items-baseline justify-between mb-2">
+                <Label className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">Потоки</Label>
+                <span className="text-xs font-mono text-[var(--text-secondary)]">{maxWorkers}</span>
               </div>
-            </CardContent>
-          </Card>
+              <Slider value={[maxWorkers]} onValueChange={(v) => setMaxWorkers(typeof v === "number" ? v : v[0])} min={1} max={10} step={1} />
+            </div>
+          </div>
         </div>
         <div className="space-y-6">
-          <Card><CardHeader><CardTitle>Модель (для шагов 2-3)</CardTitle></CardHeader><CardContent><ModelSelector value={model} onChange={setModel} /></CardContent></Card>
-          <Card><CardHeader><CardTitle>Параметры генерации</CardTitle></CardHeader><CardContent><PresetSelector value={config} onChange={setConfig} /></CardContent></Card>
+          <div className="rounded-xl border bg-[var(--surface)] p-6 space-y-5">
+            <h2 className="text-[15px] font-medium">Модель (шаги 2-3)</h2>
+            <ModelSelector value={model} onChange={setModel} />
+          </div>
+          <div className="rounded-xl border bg-[var(--surface)] p-6 space-y-5">
+            <h2 className="text-[15px] font-medium">Параметры генерации</h2>
+            <PresetSelector value={config} onChange={setConfig} />
+          </div>
         </div>
       </div>
 
-      <Button size="lg" onClick={startJob} disabled={submitting || !fileUrl}>
-        <Play className="h-4 w-4 mr-2" />{submitting ? "Запуск..." : "Запустить AI Process 3.0"}
+      <Button size="lg" onClick={startJob} disabled={submitting || !fileUrl} className="w-full h-12 text-sm font-medium gap-2">
+        <Play className="h-4 w-4" />{submitting ? "Запуск..." : "Запустить AI Process 3.0"}
       </Button>
-    </div>
+    </motion.div>
   );
 }
