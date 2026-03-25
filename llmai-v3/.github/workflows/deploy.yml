@@ -1,0 +1,107 @@
+name: Deploy to Timeweb
+
+on:
+  push:
+    branches: [main, claude/analyze-app-architecture-PcBp6]
+    paths:
+      - 'llmai-v3/**'
+
+env:
+  DEPLOY_DIR: /opt/llmai
+  DOCKER_COMPOSE_FILE: docker-compose.prod.yml
+
+jobs:
+  build-and-test:
+    name: Build & Validate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: llmai-v3
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: llmai-v3/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+  deploy:
+    name: Deploy to Timeweb
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/claude/analyze-app-architecture-PcBp6'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.TIMEWEB_HOST }}
+          username: ${{ secrets.TIMEWEB_USER }}
+          key: ${{ secrets.TIMEWEB_SSH_KEY }}
+          port: ${{ secrets.TIMEWEB_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -e
+
+            # Navigate to deploy directory
+            cd ${{ env.DEPLOY_DIR }}
+
+            # Pull latest code
+            echo "==> Pulling latest code..."
+            git fetch origin ${{ github.ref_name }}
+            git checkout ${{ github.ref_name }}
+            git pull origin ${{ github.ref_name }}
+
+            # Navigate to app directory
+            cd llmai-v3
+
+            # Copy env if first deploy
+            if [ ! -f .env ]; then
+              echo "==> First deploy: copying .env.example to .env"
+              cp .env.example .env
+              echo "WARNING: Edit .env with real values!"
+            fi
+
+            # Build and restart containers
+            echo "==> Building and restarting containers..."
+            docker compose -f docker-compose.prod.yml down
+            docker compose -f docker-compose.prod.yml build --no-cache
+            docker compose -f docker-compose.prod.yml up -d
+
+            # Run migrations
+            echo "==> Running database migrations..."
+            docker compose -f docker-compose.prod.yml exec -T app npx prisma migrate deploy || true
+
+            # Health check
+            echo "==> Waiting for app to start..."
+            sleep 10
+            for i in 1 2 3 4 5; do
+              if curl -sf http://localhost:3000 > /dev/null; then
+                echo "==> App is healthy!"
+                break
+              fi
+              echo "Attempt $i/5 - waiting..."
+              sleep 5
+            done
+
+            # Show container status
+            echo "==> Container status:"
+            docker compose -f docker-compose.prod.yml ps
+
+            echo "==> Deploy complete!"
