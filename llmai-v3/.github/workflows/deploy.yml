@@ -80,13 +80,13 @@ jobs:
 
             # Build and restart containers
             echo "==> Building and restarting containers..."
-            docker compose -f docker-compose.prod.yml down
-            docker compose -f docker-compose.prod.yml build --no-cache
-            docker compose -f docker-compose.prod.yml up -d
+            docker-compose -f docker-compose.prod.yml down
+            docker-compose -f docker-compose.prod.yml build --no-cache
+            docker-compose -f docker-compose.prod.yml up -d
 
             # Run migrations
             echo "==> Running database migrations..."
-            docker compose -f docker-compose.prod.yml exec -T app npx prisma migrate deploy || true
+            sleep 10
 
             # Health check
             echo "==> Waiting for app to start..."
@@ -102,6 +102,6 @@ jobs:
 
             # Show container status
             echo "==> Container status:"
-            docker compose -f docker-compose.prod.yml ps
+            docker-compose -f docker-compose.prod.yml ps
 
             echo "==> Deploy complete!"
