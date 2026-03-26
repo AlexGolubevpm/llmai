@@ -17,6 +17,33 @@ import { EmptyState } from "@/components/shared/empty-state";
 import { pageVariants, staggerItem } from "@/lib/animations";
 import type { StopWord } from "@/types";
 
+/** Parse a single CSV line respecting quoted fields */
+function parseCSVLine(line: string): string[] {
+  const result: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  const sep = line.includes("\t") ? "\t" : ",";
+
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === sep && !inQuotes) {
+      result.push(current);
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  result.push(current);
+  return result;
+}
+
 export default function StopwordsPage() {
   const [stopwords, setStopwords] = useState<StopWord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -118,23 +145,48 @@ export default function StopwordsPage() {
       let items: { word: string; replacement: string | null }[] = [];
 
       if (fileName.endsWith(".csv")) {
-        // Parse CSV: first column = word (term), second column = replacement (synonyms)
-        // Handles: tab-separated, comma-separated, with/without quotes
+        // Parse CSV with banned terms format:
+        // term,synonyms,Arabic,Bengali,Chinese,...
+        // Take "term" as stopword + split "synonyms" by comma → each as separate stopword
+        // Ignore language columns (Arabic, Bengali, etc.)
         const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
 
-        // Skip header row if it looks like a header
+        // Detect header row and find column indices
         const firstLine = lines[0]?.toLowerCase() || "";
-        const startIdx = (firstLine.includes("term") || firstLine.includes("word") || firstLine.includes("слово")) ? 1 : 0;
+        let termIdx = 0;
+        let synIdx = 1;
+        let startIdx = 0;
+
+        if (firstLine.includes("term") || firstLine.includes("word") || firstLine.includes("слово")) {
+          startIdx = 1;
+          // Detect separator
+          const headerSep = firstLine.includes("\t") ? "\t" : ",";
+          const headers = firstLine.split(headerSep).map((h) => h.trim().replace(/^"+|"+$/g, "").toLowerCase());
+          termIdx = headers.indexOf("term");
+          if (termIdx === -1) termIdx = 0;
+          synIdx = headers.indexOf("synonyms");
+          if (synIdx === -1) synIdx = 1;
+        }
 
         for (let li = startIdx; li < lines.length; li++) {
           const line = lines[li];
-          // Split by tab first (TSV), then comma (CSV)
-          const sep = line.includes("\t") ? "\t" : ",";
-          const parts = line.split(sep);
-          const word = (parts[0] || "").trim().replace(/^"+|"+$/g, "");
-          const replacement = (parts[1] || "").trim().replace(/^"+|"+$/g, "") || null;
-          if (word) {
-            items.push({ word, replacement });
+          // Parse CSV line respecting quoted fields
+          const parts = parseCSVLine(line);
+
+          // Add ALL columns as stopwords: term, synonyms, and all language translations
+          for (let ci = 0; ci < parts.length; ci++) {
+            const raw = (parts[ci] || "").trim().replace(/^"+|"+$/g, "");
+            if (!raw) continue;
+
+            // Synonyms column may have comma-separated values → split them
+            if (ci === synIdx && raw.includes(",")) {
+              const synonyms = raw.split(",").map((s) => s.trim().replace(/^"+|"+$/g, "")).filter(Boolean);
+              for (const syn of synonyms) {
+                if (syn) items.push({ word: syn, replacement: null });
+              }
+            } else {
+              items.push({ word: raw, replacement: null });
+            }
           }
         }
       } else {
@@ -153,6 +205,15 @@ export default function StopwordsPage() {
           replacement: item.replacement?.replace(/^"+|"+$/g, "").trim() || null,
         }))
         .filter((item) => item.word && item.word.length > 0);
+
+      // Deduplicate
+      const seen = new Set<string>();
+      items = items.filter((item) => {
+        const key = item.word.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
 
       if (items.length === 0) {
         toast.error("Файл не содержит валидных слов");
