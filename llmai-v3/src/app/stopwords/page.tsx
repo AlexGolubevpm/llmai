@@ -114,24 +114,58 @@ export default function StopwordsPage() {
     setBulkUploading(true);
     try {
       const text = await file.text();
-      const lines = text
-        .split("\n")
-        .map((l) => l.trim())
-        .filter(Boolean);
+      const fileName = file.name.toLowerCase();
+      let items: { word: string; replacement: string | null }[] = [];
 
-      const items = lines.map((line) => {
-        const parts = line.split("|").map((p) => p.trim());
-        return {
-          word: parts[0],
-          replacement: parts[1] || null,
-        };
-      });
+      if (fileName.endsWith(".csv")) {
+        // Parse CSV: first column = word (term), second column = replacement (synonyms)
+        // Handles: tab-separated, comma-separated, with/without quotes
+        const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
 
-      await fetch("/api/stopwords", {
+        // Skip header row if it looks like a header
+        const firstLine = lines[0]?.toLowerCase() || "";
+        const startIdx = (firstLine.includes("term") || firstLine.includes("word") || firstLine.includes("слово")) ? 1 : 0;
+
+        for (let li = startIdx; li < lines.length; li++) {
+          const line = lines[li];
+          // Split by tab first (TSV), then comma (CSV)
+          const sep = line.includes("\t") ? "\t" : ",";
+          const parts = line.split(sep);
+          const word = (parts[0] || "").trim().replace(/^"+|"+$/g, "");
+          const replacement = (parts[1] || "").trim().replace(/^"+|"+$/g, "") || null;
+          if (word) {
+            items.push({ word, replacement });
+          }
+        }
+      } else {
+        // TXT: pipe-delimited or plain list
+        const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+        items = lines.map((line) => {
+          const parts = line.split("|").map((p) => p.trim());
+          return { word: parts[0], replacement: parts[1] || null };
+        });
+      }
+
+      // Filter out empty words and clean quotes
+      items = items
+        .map((item) => ({
+          word: item.word.replace(/^"+|"+$/g, "").trim(),
+          replacement: item.replacement?.replace(/^"+|"+$/g, "").trim() || null,
+        }))
+        .filter((item) => item.word && item.word.length > 0);
+
+      if (items.length === 0) {
+        toast.error("Файл не содержит валидных слов");
+        return;
+      }
+
+      const resp = await fetch("/api/stopwords", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(items),
       });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || "Ошибка загрузки");
 
       fetchStopwords();
       toast.success(`Загружено ${items.length} стоп-слов из ${file.name}`);
