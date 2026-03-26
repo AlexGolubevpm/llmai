@@ -63,6 +63,7 @@ export interface JobProgress {
 export interface Preset {
   id: string;
   name: string;
+  model: string;
   systemPrompt: string;
   maxTokens: number;
   temperature: number;
