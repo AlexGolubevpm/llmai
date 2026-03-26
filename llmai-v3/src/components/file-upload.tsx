@@ -39,11 +39,16 @@ export function FileUpload({ onUpload, accept = ".csv,.txt" }: Props) {
           method: "POST",
           body: formData,
         });
-        if (!resp.ok) {
-          const err = await resp.json();
-          throw new Error(err.error || "Upload failed");
+        const text = await resp.text();
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch {
+          throw new Error("Сервер вернул некорректный ответ. Попробуйте снова.");
         }
-        const data = await resp.json();
+        if (!resp.ok) {
+          throw new Error(data.error || "Ошибка загрузки");
+        }
         setUploadedFile(data);
         onUpload(data);
         toast.success(`${file.name} загружен`);

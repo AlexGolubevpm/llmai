@@ -119,7 +119,7 @@ export default function AIProcessPage() {
           </div>
           <div className="rounded-xl border bg-[var(--surface)] p-6 space-y-5">
             <h2 className="text-[15px] font-medium">Параметры генерации</h2>
-            <PresetSelector value={config} onChange={setConfig} />
+            <PresetSelector value={config} onChange={setConfig} onModelChange={setModel} />
           </div>
         </div>
       </div>

@@ -23,6 +23,7 @@ export default function SettingsPage() {
   const [presets, setPresets] = useState<Preset[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [name, setName] = useState("");
+  const [modelId, setModelId] = useState("meta-llama/llama-3.1-8b-instruct");
   const [systemPrompt, setSystemPrompt] = useState("You are a helpful assistant.");
   const [maxTokens, setMaxTokens] = useState(512);
   const [temperature, setTemperature] = useState(0.7);
@@ -43,9 +44,10 @@ export default function SettingsPage() {
 
   useEffect(() => { fetchPresets(); }, []);
 
-  function loadPreset(p: Preset) {
+  function loadPreset(p: Preset & { model?: string }) {
     setSelectedId(p.id);
     setName(p.name);
+    setModelId((p as any).model || "meta-llama/llama-3.1-8b-instruct");
     setSystemPrompt(p.systemPrompt);
     setMaxTokens(p.maxTokens);
     setTemperature(p.temperature);
@@ -60,6 +62,7 @@ export default function SettingsPage() {
   function clearEditor() {
     setSelectedId(null);
     setName("");
+    setModelId("meta-llama/llama-3.1-8b-instruct");
     setSystemPrompt("You are a helpful assistant.");
     setMaxTokens(512);
     setTemperature(0.7);
@@ -73,13 +76,19 @@ export default function SettingsPage() {
 
   async function savePreset() {
     if (!name.trim()) { toast.error("Введите название"); return; }
-    await fetch("/api/presets", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: name.trim(), systemPrompt, maxTokens, temperature, topP, minP, topK, presencePenalty, frequencyPenalty, repetitionPenalty }),
-    });
-    fetchPresets();
-    toast.success("Пресет сохранён");
+    try {
+      const resp = await fetch("/api/presets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim(), model: modelId, systemPrompt, maxTokens, temperature, topP, minP, topK, presencePenalty, frequencyPenalty, repetitionPenalty }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || "Ошибка сохранения");
+      fetchPresets();
+      toast.success("Пресет сохранён");
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
   }
 
   async function deletePreset(id: string) {
@@ -151,6 +160,11 @@ export default function SettingsPage() {
           <div>
             <Label className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">Название</Label>
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="My Preset" className="mt-1.5" />
+          </div>
+
+          <div>
+            <Label className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">Модель</Label>
+            <Input value={modelId} onChange={(e) => setModelId(e.target.value)} placeholder="meta-llama/llama-3.1-8b-instruct" className="mt-1.5 font-mono text-xs" />
           </div>
 
           <div>

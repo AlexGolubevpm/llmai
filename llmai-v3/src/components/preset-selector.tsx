@@ -14,6 +14,7 @@ function sv(v: number | readonly number[]): number {
 interface Props {
   value: JobConfig;
   onChange: (config: JobConfig) => void;
+  onModelChange?: (model: string) => void;
 }
 
 const SLIDERS = [
@@ -32,7 +33,7 @@ const DEFAULTS: Record<string, number> = {
   presencePenalty: 0.0, frequencyPenalty: 0.0, repetitionPenalty: 1.0,
 };
 
-export function PresetSelector({ value, onChange }: Props) {
+export function PresetSelector({ value, onChange, onModelChange }: Props) {
   const [presets, setPresets] = useState<Preset[]>([]);
 
   useEffect(() => {
@@ -43,8 +44,14 @@ export function PresetSelector({ value, onChange }: Props) {
   }, []);
 
   function applyPreset(presetId: string) {
-    const preset = presets.find((p) => p.id === presetId);
+    const preset = presets.find((p) => p.id === presetId) as (Preset & { model?: string }) | undefined;
     if (!preset) return;
+
+    // Apply model from preset if callback provided
+    if (onModelChange && (preset as any).model) {
+      onModelChange((preset as any).model);
+    }
+
     onChange({
       ...value,
       systemPrompt: preset.systemPrompt,
@@ -68,11 +75,11 @@ export function PresetSelector({ value, onChange }: Props) {
       {presets.length > 0 && (
         <div>
           <Label className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">
-            Пресет
+            Загрузить пресет
           </Label>
           <Select onValueChange={(v: string | null) => v && applyPreset(String(v))}>
             <SelectTrigger className="mt-1.5">
-              <SelectValue placeholder="Выберите пресет" />
+              <SelectValue placeholder="Выберите пресет для применения" />
             </SelectTrigger>
             <SelectContent>
               {presets.map((p) => (
@@ -82,6 +89,9 @@ export function PresetSelector({ value, onChange }: Props) {
               ))}
             </SelectContent>
           </Select>
+          <p className="mt-1 text-xs text-[var(--text-muted)]">
+            Применит модель и все параметры из пресета
+          </p>
         </div>
       )}
 
