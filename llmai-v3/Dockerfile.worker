@@ -19,9 +19,6 @@ FROM base AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 worker
-
 # Copy full node_modules + source (workers run via tsx)
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=builder /app/src ./src
@@ -31,7 +28,6 @@ COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /app/package.json ./package.json
 
 RUN npm install -g tsx
-RUN mkdir -p uploads results && chown worker:nodejs uploads results
+RUN mkdir -p uploads results
 
-USER worker
 CMD ["tsx", "src/workers/index.ts"]
