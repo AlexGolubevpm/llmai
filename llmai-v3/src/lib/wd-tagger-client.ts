@@ -7,8 +7,8 @@ const WD_TAGGER_URL =
 const DEFAULT_MODEL = "SmilingWolf/wd-vit-tagger-v3";
 const DEFAULT_THRESHOLD = 0.35;
 const MAX_RETRIES = 4;
-const MAX_CONCURRENT = 3; // HuggingFace Spaces are limited
-const MIN_REQUEST_INTERVAL_MS = 500; // Rate limit: max 2 req/sec
+const MAX_CONCURRENT = 2; // Conservative for queue-based API
+const MIN_REQUEST_INTERVAL_MS = 1000;
 
 let lastRequestTime = 0;
 let activeRequests = 0;
@@ -17,30 +17,17 @@ const requestQueue: Array<{
   reject: (e: Error) => void;
 }> = [];
 
-interface GradioResponse {
-  data: [
-    unknown, // gallery
-    unknown, // combined heatmap
-    string, // caption
-    string, // tags (comma-separated)
-    { label: string; confidences: { label: string; confidence: number }[] }, // rating
-    { label: string; confidences: { label: string; confidence: number }[] }, // character
-    { label: string; confidences: { label: string; confidence: number }[] }, // general
-  ];
-}
-
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Simple concurrency limiter for HuggingFace Space.
- * Limits to MAX_CONCURRENT parallel requests and MIN_REQUEST_INTERVAL_MS between requests.
- */
+function randomSessionHash(): string {
+  return Math.random().toString(36).substring(2, 12);
+}
+
 async function acquireSlot(): Promise<void> {
   if (activeRequests < MAX_CONCURRENT) {
     activeRequests++;
-    // Rate limit: ensure minimum interval between requests
     const now = Date.now();
     const timeSinceLastRequest = now - lastRequestTime;
     if (timeSinceLastRequest < MIN_REQUEST_INTERVAL_MS) {
@@ -49,7 +36,6 @@ async function acquireSlot(): Promise<void> {
     lastRequestTime = Date.now();
     return;
   }
-  // Queue the request
   return new Promise((resolve, reject) => {
     requestQueue.push({ resolve, reject });
   });
@@ -66,21 +52,124 @@ function releaseSlot(): void {
 }
 
 /**
- * Wake up the HuggingFace Space if it's sleeping.
- * Sends a lightweight request to trigger cold start.
+ * Call WD Tagger via Gradio Queue API.
+ *
+ * Flow:
+ *   1. POST /queue/join — submit job to queue
+ *   2. GET /queue/data?session_hash=xxx — SSE stream for result
  */
-async function wakeUpSpace(): Promise<void> {
-  try {
-    const resp = await fetch(`${WD_TAGGER_URL}/info`, {
-      method: "GET",
-      signal: AbortSignal.timeout(10000),
-    });
-    if (resp.ok) return;
-  } catch {
-    // Space might be waking up, wait and continue
+async function callGradioQueue(
+  imageUrl: string,
+  model: string,
+  threshold: number
+): Promise<WDTaggerResult> {
+  const sessionHash = randomSessionHash();
+
+  // Step 1: Join the queue
+  const joinResp = await fetch(`${WD_TAGGER_URL}/queue/join`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      data: [
+        {
+          path: imageUrl,
+          meta: { _type: "gradio.FileData" },
+          orig_name: "image.jpg",
+        },
+        model,
+        threshold,
+      ],
+      fn_index: 0,
+      session_hash: sessionHash,
+    }),
+  });
+
+  if (!joinResp.ok) {
+    const text = await joinResp.text();
+    throw new Error(`WD Tagger queue/join error ${joinResp.status}: ${text}`);
   }
-  // Wait for cold start (typically 20-30 seconds)
-  await sleep(15000);
+
+  // Step 2: Listen for result via SSE
+  const dataResp = await fetch(
+    `${WD_TAGGER_URL}/queue/data?session_hash=${sessionHash}`,
+    {
+      method: "GET",
+      headers: { Accept: "text/event-stream" },
+    }
+  );
+
+  if (!dataResp.ok) {
+    const text = await dataResp.text();
+    throw new Error(`WD Tagger queue/data error ${dataResp.status}: ${text}`);
+  }
+
+  const body = await dataResp.text();
+
+  // Parse SSE events to find the "process_completed" event
+  const events = body.split("\n\n").filter(Boolean);
+  for (const event of events) {
+    const dataLine = event
+      .split("\n")
+      .find((l) => l.startsWith("data: "));
+    if (!dataLine) continue;
+
+    const json = dataLine.slice(6); // Remove "data: "
+    let parsed;
+    try {
+      parsed = JSON.parse(json);
+    } catch {
+      continue;
+    }
+
+    if (parsed.msg === "process_completed" && parsed.output?.data) {
+      return parseGradioOutput(parsed.output.data);
+    }
+
+    if (parsed.msg === "process_completed" && parsed.output?.error) {
+      throw new Error(`WD Tagger error: ${parsed.output.error}`);
+    }
+  }
+
+  throw new Error("WD Tagger: no result received from queue");
+}
+
+function parseGradioOutput(data: unknown[]): WDTaggerResult {
+  const [
+    , // gallery
+    , // combined heatmap
+    caption,
+    tagsStr,
+    ratingData,
+    characterData,
+    generalData,
+  ] = data as [
+    unknown,
+    unknown,
+    string,
+    string,
+    { label: string; confidences: { label: string; confidence: number }[] },
+    { label: string; confidences: { label: string; confidence: number }[] },
+    { label: string; confidences: { label: string; confidence: number }[] },
+  ];
+
+  return {
+    caption: caption || "",
+    tags: tagsStr
+      ? tagsStr
+          .split(",")
+          .map((t: string) => t.trim())
+          .filter(Boolean)
+      : [],
+    rating: (ratingData?.confidences || []).map((c) => ({
+      label: c.label,
+      confidence: c.confidence,
+    })),
+    characters: (characterData?.confidences || []).map((c) => c.label),
+    generalTags: (generalData?.confidences || []).map((c) => ({
+      tag: c.label,
+      confidence: c.confidence,
+    })),
+  };
 }
 
 /**
@@ -95,13 +184,13 @@ export async function analyzeThumbnail(
 
   await acquireSlot();
   try {
-    return await analyzeThumbnailInternal(imageUrl, model, threshold);
+    return await analyzeThumbnailWithRetry(imageUrl, model, threshold);
   } finally {
     releaseSlot();
   }
 }
 
-async function analyzeThumbnailInternal(
+async function analyzeThumbnailWithRetry(
   imageUrl: string,
   model: string,
   threshold: number
@@ -110,116 +199,34 @@ async function analyzeThumbnailInternal(
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
-      const resp = await fetch(`${WD_TAGGER_URL}/api/predict`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          data: [
-            {
-              path: imageUrl,
-              meta: { _type: "gradio.FileData" },
-              orig_name: "image.jpg",
-            },
-            model,
-            threshold,
-          ],
-        }),
-        signal: AbortSignal.timeout(60000), // 60s timeout for cold starts
-      });
-
-      if (resp.ok) {
-        const result: GradioResponse = await resp.json();
-        return parseGradioResponse(result);
-      }
-
-      // 503 = Space is sleeping/loading
-      if (resp.status === 503) {
-        console.warn(
-          `WD Tagger Space is sleeping, waking up (attempt ${attempt + 1}/${MAX_RETRIES})`
-        );
-        await wakeUpSpace();
-        continue;
-      }
-
-      // 429 = Rate limited
-      if (resp.status === 429) {
-        const backoff = Math.pow(2, attempt) * 2000; // 2s, 4s, 8s, 16s
-        console.warn(`WD Tagger rate limited, waiting ${backoff}ms`);
-        await sleep(backoff);
-        continue;
-      }
-
-      const text = await resp.text();
-      throw new Error(`WD Tagger API error ${resp.status}: ${text}`);
+      return await callGradioQueue(imageUrl, model, threshold);
     } catch (err) {
       lastError = err as Error;
       const msg = (err as Error).message || "";
 
-      // Timeout or network error — retry with backoff
-      if (
-        msg.includes("timeout") ||
-        msg.includes("abort") ||
-        msg.includes("fetch") ||
-        msg.includes("ECONNREFUSED")
-      ) {
-        const backoff = Math.pow(2, attempt) * 2000;
-        console.warn(
-          `WD Tagger network error: ${msg}, retry ${attempt + 1}/${MAX_RETRIES} in ${backoff}ms`
-        );
-        if (attempt === 0) {
-          // First failure might mean space is sleeping
-          await wakeUpSpace();
-        } else {
-          await sleep(backoff);
-        }
-        continue;
-      }
+      console.warn(
+        `WD Tagger attempt ${attempt + 1}/${MAX_RETRIES} failed: ${msg}`
+      );
 
-      // Non-retryable error
-      throw err;
+      // Wait before retry
+      const backoff = Math.pow(2, attempt) * 2000;
+      await sleep(backoff);
     }
   }
 
   throw lastError || new Error("WD Tagger: max retries exceeded");
 }
 
-function parseGradioResponse(result: GradioResponse): WDTaggerResult {
-  const [, , caption, tagsStr, ratingData, characterData, generalData] =
-    result.data;
-
-  return {
-    caption: caption || "",
-    tags: tagsStr
-      ? tagsStr
-          .split(",")
-          .map((t: string) => t.trim())
-          .filter(Boolean)
-      : [],
-    rating: (ratingData?.confidences || []).map(
-      (c: { label: string; confidence: number }) => ({
-        label: c.label,
-        confidence: c.confidence,
-      })
-    ),
-    characters: (characterData?.confidences || []).map(
-      (c: { label: string }) => c.label
-    ),
-    generalTags: (generalData?.confidences || []).map(
-      (c: { label: string; confidence: number }) => ({
-        tag: c.label,
-        confidence: c.confidence,
-      })
-    ),
-  };
-}
-
 /**
- * Analyze multiple thumbnails in parallel with concurrency control.
- * Returns results in the same order as input URLs.
+ * Analyze multiple thumbnails with concurrency control.
  */
 export async function analyzeThumbnailsBatch(
   imageUrls: string[],
-  options?: { model?: string; threshold?: number; onProgress?: (done: number, total: number) => void }
+  options?: {
+    model?: string;
+    threshold?: number;
+    onProgress?: (done: number, total: number) => void;
+  }
 ): Promise<(WDTaggerResult | null)[]> {
   let completed = 0;
   const total = imageUrls.length;
