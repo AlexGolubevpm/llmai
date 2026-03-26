@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -16,6 +17,7 @@ import { JOB_TYPE_CONFIG, formatRelativeTime } from "@/lib/constants";
 import type { Job } from "@/types";
 
 export default function DashboardPage() {
+  const router = useRouter();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -108,7 +110,8 @@ export default function DashboardPage() {
                     initial="initial"
                     animate="animate"
                     transition={{ delay: i * 0.03 }}
-                    className="border-b last:border-0 hover:bg-[var(--surface-raised)] transition-colors"
+                    className="border-b last:border-0 hover:bg-[var(--surface-raised)] transition-colors cursor-pointer"
+                    onClick={() => router.push(`/jobs/${job.id}`)}
                   >
                     <TableCell>
                       <span className="inline-flex items-center gap-1.5 rounded-md bg-[var(--surface-raised)] px-2 py-0.5 text-xs font-medium">
