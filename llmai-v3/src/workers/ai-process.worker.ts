@@ -12,9 +12,45 @@ import Papa from "papaparse";
 import type { JobConfig } from "@/types";
 
 const MAX_ROW_RETRIES = 3;
+const IMAGE_CACHE = new Map<string, string>(); // url → base64 data url
 
 /**
- * Vision-capable chat completion — sends image URL in the message.
+ * Download image and convert to base64 data URL.
+ * Caches results to avoid re-downloading same image.
+ */
+async function imageToBase64(url: string): Promise<string | null> {
+  if (!url) return null;
+
+  const cached = IMAGE_CACHE.get(url);
+  if (cached) return cached;
+
+  try {
+    const resp = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; LLMAI/3.0)" },
+      redirect: "follow",
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (!resp.ok) {
+      console.warn(`[AI Process] Failed to download image ${resp.status}: ${url}`);
+      return null;
+    }
+
+    const contentType = resp.headers.get("content-type") || "image/jpeg";
+    const buffer = await resp.arrayBuffer();
+    const base64 = Buffer.from(buffer).toString("base64");
+    const dataUrl = `data:${contentType};base64,${base64}`;
+
+    IMAGE_CACHE.set(url, dataUrl);
+    return dataUrl;
+  } catch (err) {
+    console.warn(`[AI Process] Image download error: ${(err as Error).message} — ${url}`);
+    return null;
+  }
+}
+
+/**
+ * Vision-capable chat completion — downloads image and sends as base64.
  */
 async function visionCompletion(
   apiKey: string,
@@ -30,16 +66,23 @@ async function visionCompletion(
     { role: "system", content: systemPrompt },
   ];
 
-  if (imageUrl) {
+  // Download image and convert to base64
+  const base64Image = await imageToBase64(imageUrl);
+
+  if (base64Image) {
     messages.push({
       role: "user",
       content: [
-        { type: "image_url", image_url: { url: imageUrl } },
+        { type: "image_url", image_url: { url: base64Image } },
         { type: "text", text: userPrompt },
       ],
     });
   } else {
-    messages.push({ role: "user", content: userPrompt });
+    // Fallback: text-only if image download failed
+    messages.push({
+      role: "user",
+      content: `[Image could not be loaded from: ${imageUrl}]\n\n${userPrompt}`,
+    });
   }
 
   const resp = await fetch(`${BASE_URL}/chat/completions`, {
