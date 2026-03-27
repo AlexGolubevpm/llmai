@@ -1,7 +1,6 @@
 import { type Job as BullJob } from "bullmq";
 import { prisma } from "@/lib/db";
 import { chatCompletion } from "@/lib/openrouter-client";
-import { analyzeThumbnailsBatch } from "@/lib/wd-tagger-client";
 import {
   postprocessLLMResponse,
   cleanText,
@@ -10,28 +9,102 @@ import {
 import { publishProgress } from "@/lib/queue";
 import * as fs from "fs";
 import Papa from "papaparse";
-import type { JobConfig, WDTaggerResult } from "@/types";
+import type { JobConfig } from "@/types";
 
 const MAX_ROW_RETRIES = 3;
-const TAGGER_BATCH_SIZE = 10; // Process thumbnails in batches of 10
+
+/**
+ * Vision-capable chat completion — sends image URL in the message.
+ */
+async function visionCompletion(
+  apiKey: string,
+  model: string,
+  systemPrompt: string,
+  userPrompt: string,
+  imageUrl: string,
+  maxTokens: number
+): Promise<string> {
+  const BASE_URL = process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1";
+
+  const messages: Record<string, unknown>[] = [
+    { role: "system", content: systemPrompt },
+  ];
+
+  if (imageUrl) {
+    messages.push({
+      role: "user",
+      content: [
+        { type: "image_url", image_url: { url: imageUrl } },
+        { type: "text", text: userPrompt },
+      ],
+    });
+  } else {
+    messages.push({ role: "user", content: userPrompt });
+  }
+
+  const resp = await fetch(`${BASE_URL}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
+      "X-Title": "LLMAI v3.0",
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      max_tokens: maxTokens,
+      temperature: 0.7,
+    }),
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`OpenRouter API ${resp.status}: ${text}`);
+  }
+
+  const data = await resp.json();
+  return data.choices?.[0]?.message?.content || "";
+}
+
+async function retryCall<T>(
+  fn: () => Promise<T>,
+  retries: number,
+  context: string
+): Promise<T> {
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err as Error;
+      console.error(`[AI Process] ${context} attempt ${attempt + 1}/${retries} failed: ${(err as Error).message}`);
+      if (attempt < retries - 1) {
+        await new Promise((r) => setTimeout(r, Math.pow(2, attempt) * 1000));
+      }
+    }
+  }
+  throw lastError!;
+}
 
 export async function aiProcessProcessor(job: BullJob) {
   const { jobId } = job.data;
   const dbJob = await prisma.job.findUniqueOrThrow({ where: { id: jobId } });
   const config = dbJob.config as unknown as JobConfig;
   const apiKey = process.env.OPENROUTER_API_KEY!;
+  const visionModel = config.model || "xiaomi/mimo-v2-omni";
+
+  console.log(`[AI Process] Starting job ${jobId}, model: ${visionModel}`);
 
   await prisma.job.update({
     where: { id: jobId },
     data: { status: "RUNNING", startedAt: new Date() },
   });
 
-  // Read input
   const fileContent = fs.readFileSync(dbJob.inputFileUrl, "utf-8");
   const parsed = Papa.parse(fileContent, { header: true });
   const rows = parsed.data as Record<string, string>[];
 
-  // Load allowed tags and categories from DB
   const allowedTags = await prisma.allowedTag.findMany();
   const allowedCategories = await prisma.allowedCategory.findMany();
   const stopWords: StopWordEntry[] = (
@@ -39,193 +112,152 @@ export async function aiProcessProcessor(job: BullJob) {
   ).map((w) => ({ word: w.word, replacement: w.replacement }));
 
   const totalRows = rows.length;
-
   await prisma.job.update({
     where: { id: jobId },
-    data: { totalRows, totalPasses: 3 },
+    data: { totalRows, totalPasses: 5 },
   });
 
-  const errorLog: { row: number; error: string; retries: number }[] = [];
+  const errorLog: { row: number; step: string; error: string; retries: number }[] = [];
   const startTime = Date.now();
+  const maxWorkers = config.maxWorkers || 3;
+  const chunkSize = config.chunkSize || 5;
 
-  // ====== STEP 1: WD Tagger — Batch analyze all thumbnails ======
+  // ====== STEP 1: Tagging (from thumbnail) ======
+  console.log(`[AI Process] Step 1: Tagging ${totalRows} thumbnails`);
   await prisma.job.update({ where: { id: jobId }, data: { currentPass: 1 } });
-
-  const thumbnailUrls = rows.map(
-    (r) => r["thumbnail_url"] || r["thumb_url"] || ""
-  );
-  const taggerResults: (WDTaggerResult | null)[] = [];
-
-  // Process in batches to avoid overwhelming HuggingFace
-  for (let i = 0; i < thumbnailUrls.length; i += TAGGER_BATCH_SIZE) {
-    const batchUrls = thumbnailUrls.slice(i, i + TAGGER_BATCH_SIZE);
-    const batchResults = await analyzeThumbnailsBatch(batchUrls, {
-      onProgress: (done) => {
-        const totalDone = i + done;
-        publishProgress(jobId, {
-          status: "RUNNING",
-          processedRows: totalDone,
-          totalRows,
-          failedRows: errorLog.length,
-          currentPass: 1,
-          totalPasses: 3,
-          eta: estimateEta(startTime, totalDone, totalRows * 3),
-          speed: calcSpeed(startTime, totalDone),
-        });
-      },
-    });
-
-    taggerResults.push(...batchResults);
-
-    // Update DB progress
-    await prisma.job.update({
-      where: { id: jobId },
-      data: { processedRows: Math.min(i + TAGGER_BATCH_SIZE, totalRows) },
-    });
-  }
-
-  // Store Step 1 results into rows
-  for (let i = 0; i < rows.length; i++) {
-    const result = taggerResults[i];
-    if (result) {
-      rows[i]["ai_raw_tags"] = result.tags.join(", ");
-      rows[i]["rating"] = result.rating[0]?.label || "unknown";
-    } else {
-      rows[i]["ai_raw_tags"] = "";
-      rows[i]["rating"] = "unknown";
-      if (thumbnailUrls[i]) {
-        errorLog.push({
-          row: i,
-          error: "WD Tagger: failed after retries",
-          retries: 3,
-        });
-      }
-    }
-  }
-
-  // ====== STEP 2: Tag & Category Mapping (LLM) — parallel in chunks ======
-  await prisma.job.update({ where: { id: jobId }, data: { currentPass: 2 } });
-
-  const allowedTagNames = allowedTags.map((t) => t.name).join(", ");
-  const allowedCatNames = allowedCategories.map((c) => c.name).join(", ");
-  const maxWorkers = config.maxWorkers || 5;
-  const chunkSize = config.chunkSize || 10;
 
   for (let i = 0; i < rows.length; i += chunkSize) {
     const chunk = rows.slice(i, Math.min(i + chunkSize, rows.length));
-
     const promises = chunk.map(async (row, idx) => {
       const globalIdx = i + idx;
-      const detectedTags = row["ai_raw_tags"] || "";
-
-      const mappingPrompt = `Given these detected tags from image analysis: [${detectedTags}]
-Existing tags from feed: [${row["tags"] || ""}]
-Existing categories from feed: [${row["categories"] || ""}]
-
-Allowed tags: [${allowedTagNames}]
-Allowed categories: [${allowedCatNames}]
-
-Task: Map the detected and existing tags to the closest matches from the Allowed tags list. Select exactly 5 tags and 1-3 categories.
-Return ONLY in this format:
-TAGS: tag1, tag2, tag3, tag4, tag5
-CATEGORIES: cat1, cat2`;
-
-      for (let retry = 0; retry < MAX_ROW_RETRIES; retry++) {
-        try {
-          const result = await chatCompletion(apiKey, {
-            model: config.model || "openai/gpt-4o-mini",
-            systemPrompt:
-              "You are an expert tag and category mapper. Follow instructions exactly.",
-            userPrompt: mappingPrompt,
-            maxTokens: 200,
-            temperature: 0.3,
-            topP: 1.0,
-            minP: 0.0,
-            topK: 40,
-            presencePenalty: 0.0,
-            frequencyPenalty: 0.0,
-            repetitionPenalty: 1.0,
-          });
-
-          const tagsMatch = result.match(/TAGS:\s*(.+)/i);
-          const catsMatch = result.match(/CATEGORIES:\s*(.+)/i);
-          row["mapped_tags"] = tagsMatch ? tagsMatch[1].trim() : "";
-          row["mapped_categories"] = catsMatch ? catsMatch[1].trim() : "";
-          return;
-        } catch (err) {
-          if (retry === MAX_ROW_RETRIES - 1) {
-            errorLog.push({
-              row: globalIdx,
-              error: `Step 2: ${(err as Error).message}`,
-              retries: retry + 1,
-            });
-            row["mapped_tags"] = "";
-            row["mapped_categories"] = "";
-          }
-          await new Promise((r) =>
-            setTimeout(r, Math.pow(2, retry) * 1000)
-          );
-        }
+      const thumbUrl = row["thumbnail_url"] || row["thumb_url"] || "";
+      try {
+        const result = await retryCall(
+          () => visionCompletion(
+            apiKey, visionModel,
+            "You are an expert image tagger for adult content. Analyze the image and return relevant tags.",
+            "Analyze this image. Return ONLY a comma-separated list of descriptive tags (max 15 tags). Tags should describe: actions, body types, positions, clothing, setting, hair color, ethnicity. Do NOT include explanations.",
+            thumbUrl, 200
+          ),
+          MAX_ROW_RETRIES,
+          `Step1 row ${globalIdx}`
+        );
+        row["ai_tags"] = postprocessLLMResponse(result).replace(/\n/g, ", ");
+      } catch (err) {
+        row["ai_tags"] = "";
+        errorLog.push({ row: globalIdx, step: "1-tagging", error: (err as Error).message, retries: MAX_ROW_RETRIES });
       }
     });
-
-    // Process with concurrency limit
     for (let b = 0; b < promises.length; b += maxWorkers) {
       await Promise.all(promises.slice(b, b + maxWorkers));
     }
-
-    const step2Done = Math.min(i + chunkSize, totalRows);
-    await prisma.job.update({
-      where: { id: jobId },
-      data: { processedRows: step2Done },
-    });
-    await publishProgress(jobId, {
-      status: "RUNNING",
-      processedRows: step2Done,
-      totalRows,
-      failedRows: errorLog.length,
-      currentPass: 2,
-      totalPasses: 3,
-      eta: estimateEta(startTime, totalRows + step2Done, totalRows * 3),
-      speed: calcSpeed(startTime, totalRows + step2Done),
-    });
+    await updateProgress(jobId, i + chunk.length, totalRows, 1, 5, errorLog.length, startTime);
   }
 
-  // ====== STEP 3: SEO Title & Description Generation (LLM) — parallel in chunks ======
+  // ====== STEP 2: Scene Description (from thumbnail) ======
+  console.log(`[AI Process] Step 2: Scene descriptions`);
+  await prisma.job.update({ where: { id: jobId }, data: { currentPass: 2 } });
+
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const chunk = rows.slice(i, Math.min(i + chunkSize, rows.length));
+    const promises = chunk.map(async (row, idx) => {
+      const globalIdx = i + idx;
+      const thumbUrl = row["thumbnail_url"] || row["thumb_url"] || "";
+      try {
+        const result = await retryCall(
+          () => visionCompletion(
+            apiKey, visionModel,
+            "You are an expert at describing adult content scenes concisely.",
+            "Describe this scene in 1-2 sentences. Be specific about what is happening, who is involved, and the setting. Keep it concise and descriptive for SEO purposes.",
+            thumbUrl, 150
+          ),
+          MAX_ROW_RETRIES,
+          `Step2 row ${globalIdx}`
+        );
+        row["scene_description"] = postprocessLLMResponse(result);
+      } catch (err) {
+        row["scene_description"] = "";
+        errorLog.push({ row: globalIdx, step: "2-scene", error: (err as Error).message, retries: MAX_ROW_RETRIES });
+      }
+    });
+    for (let b = 0; b < promises.length; b += maxWorkers) {
+      await Promise.all(promises.slice(b, b + maxWorkers));
+    }
+    await updateProgress(jobId, i + chunk.length, totalRows, 2, 5, errorLog.length, startTime);
+  }
+
+  // ====== STEP 3: Model/Character Detection (from thumbnail) ======
+  console.log(`[AI Process] Step 3: Model detection`);
   await prisma.job.update({ where: { id: jobId }, data: { currentPass: 3 } });
 
   for (let i = 0; i < rows.length; i += chunkSize) {
     const chunk = rows.slice(i, Math.min(i + chunkSize, rows.length));
+    const promises = chunk.map(async (row, idx) => {
+      const globalIdx = i + idx;
+      const thumbUrl = row["thumbnail_url"] || row["thumb_url"] || "";
+      try {
+        const result = await retryCall(
+          () => visionCompletion(
+            apiKey, visionModel,
+            "You are an expert at identifying content type and style from thumbnails.",
+            "Based on this image, identify:\n1. Content type (hentai/anime/3D/real/CGI/cartoon)\n2. Number of people/characters\n3. Art style if animated\n\nReturn ONLY in format:\nTYPE: <type>\nCOUNT: <number>\nSTYLE: <style or 'real'>",
+            thumbUrl, 100
+          ),
+          MAX_ROW_RETRIES,
+          `Step3 row ${globalIdx}`
+        );
+        row["content_type"] = postprocessLLMResponse(result);
+      } catch (err) {
+        row["content_type"] = "";
+        errorLog.push({ row: globalIdx, step: "3-model", error: (err as Error).message, retries: MAX_ROW_RETRIES });
+      }
+    });
+    for (let b = 0; b < promises.length; b += maxWorkers) {
+      await Promise.all(promises.slice(b, b + maxWorkers));
+    }
+    await updateProgress(jobId, i + chunk.length, totalRows, 3, 5, errorLog.length, startTime);
+  }
 
+  // ====== STEP 4: SEO Title Generation (LLM, text-only) ======
+  console.log(`[AI Process] Step 4: SEO title generation`);
+  await prisma.job.update({ where: { id: jobId }, data: { currentPass: 4 } });
+
+  const allowedTagNames = allowedTags.map((t) => t.name).join(", ");
+  const allowedCatNames = allowedCategories.map((c) => c.name).join(", ");
+
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const chunk = rows.slice(i, Math.min(i + chunkSize, rows.length));
     const promises = chunk.map(async (row, idx) => {
       const globalIdx = i + idx;
       const title = row["title"] || "";
       row["original_title"] = title;
 
-      const seoPrompt = `Based on the following information, generate an SEO-optimized NSFW title and description.
+      const prompt = `Generate an SEO-optimized NSFW title based on:
 
 Original title: ${title}
-Tags: ${row["mapped_tags"] || ""}
-Categories: ${row["mapped_categories"] || ""}
-Content rating: ${row["rating"] || ""}
+AI tags: ${row["ai_tags"] || ""}
+Scene: ${row["scene_description"] || ""}
+Content type: ${row["content_type"] || ""}
+Existing tags: ${row["tags"] || ""}
+Existing categories: ${row["categories"] || ""}
+${allowedTagNames ? `Allowed tags: [${allowedTagNames}]` : ""}
+${allowedCatNames ? `Allowed categories: [${allowedCatNames}]` : ""}
 
 Requirements:
-- SEO title: max 90 characters, include relevant keywords, engaging and descriptive
-- SEO description: max 160 characters, complement the title, include secondary keywords
-- Both should be in English, natural-sounding, and optimized for search engines in 2026
+- Max 90 characters
+- Include relevant keywords
+- Natural, engaging, search-optimized for 2026
+- English only
 
-Return ONLY in this format:
-TITLE: your seo title here
-DESCRIPTION: your seo description here`;
+Return ONLY the title, nothing else.`;
 
-      for (let retry = 0; retry < MAX_ROW_RETRIES; retry++) {
-        try {
-          const result = await chatCompletion(apiKey, {
+      try {
+        const result = await retryCall(
+          () => chatCompletion(apiKey, {
             model: config.model || "openai/gpt-4o-mini",
-            systemPrompt:
-              "You are an expert SEO content writer specializing in adult content. Generate compelling, search-optimized titles and descriptions.",
-            userPrompt: seoPrompt,
-            maxTokens: config.maxTokens || 300,
+            systemPrompt: "You are an expert SEO title writer for adult content. Generate compelling, search-optimized titles.",
+            userPrompt: prompt,
+            maxTokens: config.maxTokens || 100,
             temperature: config.temperature || 0.7,
             topP: config.topP || 1.0,
             minP: config.minP || 0.0,
@@ -233,68 +265,87 @@ DESCRIPTION: your seo description here`;
             presencePenalty: config.presencePenalty || 0.2,
             frequencyPenalty: config.frequencyPenalty || 0.4,
             repetitionPenalty: config.repetitionPenalty || 1.2,
-          });
+          }),
+          MAX_ROW_RETRIES,
+          `Step4 row ${globalIdx}`
+        );
 
-          const titleMatch = result.match(/TITLE:\s*(.+)/i);
-          const descMatch = result.match(/DESCRIPTION:\s*(.+)/i);
-
-          let seoTitle = titleMatch ? titleMatch[1].trim() : title;
-          let seoDesc = descMatch ? descMatch[1].trim() : "";
-
-          seoTitle = postprocessLLMResponse(seoTitle);
-          seoDesc = postprocessLLMResponse(seoDesc);
-          if (stopWords.length > 0) {
-            seoTitle = cleanText(seoTitle, stopWords);
-            seoDesc = cleanText(seoDesc, stopWords);
-          }
-
-          row["seo_title"] = seoTitle.slice(0, 90);
-          row["seo_description"] = seoDesc.slice(0, 160);
-          return;
-        } catch (err) {
-          if (retry === MAX_ROW_RETRIES - 1) {
-            errorLog.push({
-              row: globalIdx,
-              error: `Step 3: ${(err as Error).message}`,
-              retries: retry + 1,
-            });
-            row["seo_title"] = title;
-            row["seo_description"] = "";
-          }
-          await new Promise((r) =>
-            setTimeout(r, Math.pow(2, retry) * 1000)
-          );
-        }
+        let seoTitle = postprocessLLMResponse(result);
+        if (stopWords.length > 0) seoTitle = cleanText(seoTitle, stopWords);
+        row["seo_title"] = seoTitle.slice(0, 90);
+      } catch (err) {
+        row["seo_title"] = title;
+        errorLog.push({ row: globalIdx, step: "4-title", error: (err as Error).message, retries: MAX_ROW_RETRIES });
       }
     });
-
     for (let b = 0; b < promises.length; b += maxWorkers) {
       await Promise.all(promises.slice(b, b + maxWorkers));
     }
+    await updateProgress(jobId, i + chunk.length, totalRows, 4, 5, errorLog.length, startTime);
+  }
 
-    const step3Done = Math.min(i + chunkSize, totalRows);
-    await prisma.job.update({
-      where: { id: jobId },
-      data: { processedRows: step3Done },
+  // ====== STEP 5: SEO Description Generation (LLM, text-only) ======
+  console.log(`[AI Process] Step 5: SEO description generation`);
+  await prisma.job.update({ where: { id: jobId }, data: { currentPass: 5 } });
+
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const chunk = rows.slice(i, Math.min(i + chunkSize, rows.length));
+    const promises = chunk.map(async (row, idx) => {
+      const globalIdx = i + idx;
+
+      const prompt = `Generate an SEO meta description based on:
+
+Title: ${row["seo_title"] || row["title"] || ""}
+Tags: ${row["ai_tags"] || ""}
+Scene: ${row["scene_description"] || ""}
+Content type: ${row["content_type"] || ""}
+
+Requirements:
+- Max 160 characters
+- Complement the title with secondary keywords
+- Natural, engaging, optimized for search in 2026
+
+Return ONLY the description, nothing else.`;
+
+      try {
+        const result = await retryCall(
+          () => chatCompletion(apiKey, {
+            model: config.model || "openai/gpt-4o-mini",
+            systemPrompt: "You are an expert SEO description writer. Generate concise, compelling meta descriptions.",
+            userPrompt: prompt,
+            maxTokens: 100,
+            temperature: config.temperature || 0.7,
+            topP: config.topP || 1.0,
+            minP: config.minP || 0.0,
+            topK: config.topK || 40,
+            presencePenalty: config.presencePenalty || 0.2,
+            frequencyPenalty: config.frequencyPenalty || 0.4,
+            repetitionPenalty: config.repetitionPenalty || 1.0,
+          }),
+          MAX_ROW_RETRIES,
+          `Step5 row ${globalIdx}`
+        );
+
+        let seoDesc = postprocessLLMResponse(result);
+        if (stopWords.length > 0) seoDesc = cleanText(seoDesc, stopWords);
+        row["seo_description"] = seoDesc.slice(0, 160);
+      } catch (err) {
+        row["seo_description"] = "";
+        errorLog.push({ row: globalIdx, step: "5-description", error: (err as Error).message, retries: MAX_ROW_RETRIES });
+      }
     });
-    await publishProgress(jobId, {
-      status: "RUNNING",
-      processedRows: step3Done,
-      totalRows,
-      failedRows: errorLog.length,
-      currentPass: 3,
-      totalPasses: 3,
-      eta: estimateEta(startTime, totalRows * 2 + step3Done, totalRows * 3),
-      speed: calcSpeed(startTime, totalRows * 2 + step3Done),
-    });
+    for (let b = 0; b < promises.length; b += maxWorkers) {
+      await Promise.all(promises.slice(b, b + maxWorkers));
+    }
+    await updateProgress(jobId, i + chunk.length, totalRows, 5, 5, errorLog.length, startTime);
   }
 
   // Write output
-  const outputPath = dbJob.inputFileUrl.replace(
-    /(\.\w+)$/,
-    `_ai_processed$1`
-  );
+  const outputPath = dbJob.inputFileUrl.replace(/(\.\w+)$/, `_ai_processed$1`);
   fs.writeFileSync(outputPath, Papa.unparse(rows), "utf-8");
+
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  console.log(`[AI Process] Job ${jobId} completed in ${elapsed}s. Rows: ${totalRows}, Errors: ${errorLog.length}`);
 
   await prisma.job.update({
     where: { id: jobId },
@@ -307,26 +358,37 @@ DESCRIPTION: your seo description here`;
     },
   });
 
-  await publishProgress(jobId, {
-    status: "COMPLETED",
-    processedRows: totalRows,
-    totalRows,
+  await publishProgress(jobId, { status: "COMPLETED", processedRows: totalRows, totalRows });
+}
+
+async function updateProgress(
+  jobId: string,
+  processed: number,
+  total: number,
+  step: number,
+  totalSteps: number,
+  errors: number,
+  startTime: number
+) {
+  const elapsed = (Date.now() - startTime) / 1000;
+  const totalDone = (step - 1) * total + processed;
+  const totalWork = totalSteps * total;
+  const speed = totalDone / elapsed;
+  const eta = Math.round((totalWork - totalDone) / speed) || 0;
+
+  await prisma.job.update({
+    where: { id: jobId },
+    data: { processedRows: processed, failedRows: errors },
   });
-}
 
-function estimateEta(
-  startTime: number,
-  completedSteps: number,
-  totalSteps: number
-): number {
-  const elapsed = (Date.now() - startTime) / 1000;
-  if (completedSteps === 0) return 0;
-  const speed = completedSteps / elapsed;
-  return Math.round((totalSteps - completedSteps) / speed);
-}
-
-function calcSpeed(startTime: number, completedSteps: number): number {
-  const elapsed = (Date.now() - startTime) / 1000;
-  if (elapsed === 0) return 0;
-  return Math.round((completedSteps / elapsed) * 10) / 10;
+  await publishProgress(jobId, {
+    status: "RUNNING",
+    processedRows: processed,
+    totalRows: total,
+    failedRows: errors,
+    currentPass: step,
+    totalPasses: totalSteps,
+    eta,
+    speed: Math.round(speed * 10) / 10,
+  });
 }
