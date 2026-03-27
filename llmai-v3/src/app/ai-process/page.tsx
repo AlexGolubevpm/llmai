@@ -40,6 +40,12 @@ export default function AIProcessPage() {
     presencePenalty: 0.2, frequencyPenalty: 0.4, repetitionPenalty: 1.2,
   });
   const [maxWorkers, setMaxWorkers] = useState(3);
+  const [promptStep1, setPromptStep1] = useState("");
+  const [promptStep2, setPromptStep2] = useState("");
+  const [promptStep3, setPromptStep3] = useState("");
+  const [promptStep4, setPromptStep4] = useState("");
+  const [promptStep5, setPromptStep5] = useState("");
+  const [showPrompts, setShowPrompts] = useState(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -66,7 +72,14 @@ export default function AIProcessPage() {
         body: JSON.stringify({
           type: "AI_PROCESS",
           inputFileUrl: jobFileUrl,
-          config: { ...config, model, maxWorkers, chunkSize: 5, applyStopWords: true },
+          config: {
+            ...config, model, maxWorkers, chunkSize: 5, applyStopWords: true,
+            ...(promptStep1 && { promptStep1 }),
+            ...(promptStep2 && { promptStep2 }),
+            ...(promptStep3 && { promptStep3 }),
+            ...(promptStep4 && { promptStep4 }),
+            ...(promptStep5 && { promptStep5 }),
+          },
         }),
       });
       const data = await resp.json();
@@ -162,6 +175,40 @@ export default function AIProcessPage() {
             <PresetSelector value={config} onChange={setConfig} onModelChange={setModel} />
           </div>
         </div>
+      </div>
+
+      {/* Per-step prompts */}
+      <div className="rounded-xl border bg-[var(--surface)] p-6 space-y-4">
+        <button
+          onClick={() => setShowPrompts(!showPrompts)}
+          className="flex items-center justify-between w-full text-left"
+        >
+          <h2 className="text-[15px] font-medium">Промпты по шагам</h2>
+          <span className="text-xs text-[var(--text-muted)]">{showPrompts ? "Свернуть" : "Настроить"}</span>
+        </button>
+        {showPrompts && (
+          <div className="space-y-4 pt-2">
+            <p className="text-xs text-[var(--text-muted)]">Оставьте пустым для использования промптов по умолчанию</p>
+            {[
+              { label: "Шаг 1: Тегирование", value: promptStep1, set: setPromptStep1, placeholder: "Analyze this image. Return ONLY comma-separated tags..." },
+              { label: "Шаг 2: Описание сцены", value: promptStep2, set: setPromptStep2, placeholder: "Describe this scene in 1-2 sentences..." },
+              { label: "Шаг 3: Тип контента", value: promptStep3, set: setPromptStep3, placeholder: "Identify: 1. Type 2. Number of people 3. Art style..." },
+              { label: "Шаг 4: SEO Title", value: promptStep4, set: setPromptStep4, placeholder: "Generate SEO NSFW title based on context..." },
+              { label: "Шаг 5: SEO Description", value: promptStep5, set: setPromptStep5, placeholder: "Generate SEO meta description..." },
+            ].map((s) => (
+              <div key={s.label}>
+                <Label className="text-xs font-medium text-[var(--text-muted)]">{s.label}</Label>
+                <Textarea
+                  value={s.value}
+                  onChange={(e) => s.set(e.target.value)}
+                  placeholder={s.placeholder}
+                  rows={2}
+                  className="mt-1 text-xs"
+                />
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <Button size="lg" onClick={startJob} disabled={submitting || (inputMode === "file" ? !fileUrl : !textTitle.trim())} className="w-full h-12 text-sm font-medium gap-2">

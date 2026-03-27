@@ -104,10 +104,21 @@ export async function listModels(apiKey: string): Promise<LLMModel[]> {
   return models;
 }
 
+// Simple rate limiter: track last request time, enforce minimum gap
+const MIN_REQUEST_GAP_MS = 300; // ~200 req/min max
+let lastRequestTime = 0;
+
 export async function chatCompletion(
   apiKey: string,
   params: ChatCompletionParams
 ): Promise<string> {
+  // Rate limit: enforce minimum gap between requests
+  const now = Date.now();
+  const timeSinceLast = now - lastRequestTime;
+  if (timeSinceLast < MIN_REQUEST_GAP_MS) {
+    await sleep(MIN_REQUEST_GAP_MS - timeSinceLast);
+  }
+  lastRequestTime = Date.now();
   const payload: Record<string, unknown> = {
     model: params.model,
     messages: [

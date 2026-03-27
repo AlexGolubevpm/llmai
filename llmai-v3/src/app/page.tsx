@@ -93,6 +93,7 @@ export default function DashboardPage() {
             <TableHeader>
               <TableRow className="border-b hover:bg-transparent">
                 <TableHead className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Тип</TableHead>
+                <TableHead className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Модель</TableHead>
                 <TableHead className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Статус</TableHead>
                 <TableHead className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Прогресс</TableHead>
                 <TableHead className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">Дата</TableHead>
@@ -116,6 +117,11 @@ export default function DashboardPage() {
                     <TableCell>
                       <span className="inline-flex items-center gap-1.5 rounded-md bg-[var(--surface-raised)] px-2 py-0.5 text-xs font-medium">
                         {typeConfig.label}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-xs font-mono text-[var(--text-muted)] truncate max-w-[150px] block" title={(job.config as any)?.model || "—"}>
+                        {((job.config as any)?.model || "—").split("/").pop()}
                       </span>
                     </TableCell>
                     <TableCell>
