@@ -67,7 +67,7 @@ if [ ! -f .env ]; then
     echo "  ${DEPLOY_DIR}/llmai-v3/.env"
     echo ""
     echo "  Required settings:"
-    echo "  - NOVITA_API_KEY=sk_your_key_here"
+    echo "  - OPENROUTER_API_KEY=sk_your_key_here"
     echo "  - DB_PASSWORD=${DB_PASSWORD}"
     echo "============================================"
     echo ""

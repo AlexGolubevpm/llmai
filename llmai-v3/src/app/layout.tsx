@@ -5,8 +5,8 @@ import { Providers } from "@/components/providers";
 import { Toaster } from "@/components/ui/sonner";
 
 export const metadata: Metadata = {
-  title: "LLMAI v3.0 — Novita AI Content Platform",
-  description: "Professional batch text processing with Novita AI",
+  title: "LLMAI v3.0 — AI Content Platform",
+  description: "Professional batch text processing with OpenRouter AI",
 };
 
 export default function RootLayout({

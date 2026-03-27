@@ -52,7 +52,7 @@ model Job {
 model Preset {
   id                String   @id @default(cuid())
   name              String   @unique
-  model             String   @default("meta-llama/llama-3.1-8b-instruct")
+  model             String   @default("openai/gpt-4o-mini")
   systemPrompt      String
   maxTokens         Int
   temperature       Float

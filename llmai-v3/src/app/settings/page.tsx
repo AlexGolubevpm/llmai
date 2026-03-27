@@ -23,7 +23,7 @@ export default function SettingsPage() {
   const [presets, setPresets] = useState<Preset[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [name, setName] = useState("");
-  const [modelId, setModelId] = useState("meta-llama/llama-3.1-8b-instruct");
+  const [modelId, setModelId] = useState("openai/gpt-4o-mini");
   const [systemPrompt, setSystemPrompt] = useState("You are a helpful assistant.");
   const [maxTokens, setMaxTokens] = useState(512);
   const [temperature, setTemperature] = useState(0.7);
@@ -47,7 +47,7 @@ export default function SettingsPage() {
   function loadPreset(p: Preset & { model?: string }) {
     setSelectedId(p.id);
     setName(p.name);
-    setModelId((p as any).model || "meta-llama/llama-3.1-8b-instruct");
+    setModelId((p as any).model || "openai/gpt-4o-mini");
     setSystemPrompt(p.systemPrompt);
     setMaxTokens(p.maxTokens);
     setTemperature(p.temperature);
@@ -62,7 +62,7 @@ export default function SettingsPage() {
   function clearEditor() {
     setSelectedId(null);
     setName("");
-    setModelId("meta-llama/llama-3.1-8b-instruct");
+    setModelId("openai/gpt-4o-mini");
     setSystemPrompt("You are a helpful assistant.");
     setMaxTokens(512);
     setTemperature(0.7);
@@ -164,7 +164,7 @@ export default function SettingsPage() {
 
           <div>
             <Label className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">Модель</Label>
-            <Input value={modelId} onChange={(e) => setModelId(e.target.value)} placeholder="meta-llama/llama-3.1-8b-instruct" className="mt-1.5 font-mono text-xs" />
+            <Input value={modelId} onChange={(e) => setModelId(e.target.value)} placeholder="openai/gpt-4o-mini" className="mt-1.5 font-mono text-xs" />
           </div>
 
           <div>

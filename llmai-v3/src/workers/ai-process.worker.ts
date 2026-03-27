@@ -1,6 +1,6 @@
 import { type Job as BullJob } from "bullmq";
 import { prisma } from "@/lib/db";
-import { chatCompletion } from "@/lib/novita-client";
+import { chatCompletion } from "@/lib/openrouter-client";
 import { analyzeThumbnailsBatch } from "@/lib/wd-tagger-client";
 import {
   postprocessLLMResponse,
@@ -19,7 +19,7 @@ export async function aiProcessProcessor(job: BullJob) {
   const { jobId } = job.data;
   const dbJob = await prisma.job.findUniqueOrThrow({ where: { id: jobId } });
   const config = dbJob.config as unknown as JobConfig;
-  const apiKey = process.env.NOVITA_API_KEY!;
+  const apiKey = process.env.OPENROUTER_API_KEY!;
 
   await prisma.job.update({
     where: { id: jobId },
@@ -133,7 +133,7 @@ CATEGORIES: cat1, cat2`;
       for (let retry = 0; retry < MAX_ROW_RETRIES; retry++) {
         try {
           const result = await chatCompletion(apiKey, {
-            model: config.model || "meta-llama/llama-3.1-8b-instruct",
+            model: config.model || "openai/gpt-4o-mini",
             systemPrompt:
               "You are an expert tag and category mapper. Follow instructions exactly.",
             userPrompt: mappingPrompt,
@@ -221,7 +221,7 @@ DESCRIPTION: your seo description here`;
       for (let retry = 0; retry < MAX_ROW_RETRIES; retry++) {
         try {
           const result = await chatCompletion(apiKey, {
-            model: config.model || "meta-llama/llama-3.1-8b-instruct",
+            model: config.model || "openai/gpt-4o-mini",
             systemPrompt:
               "You are an expert SEO content writer specializing in adult content. Generate compelling, search-optimized titles and descriptions.",
             userPrompt: seoPrompt,

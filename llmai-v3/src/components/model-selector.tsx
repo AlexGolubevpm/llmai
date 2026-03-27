@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { RefreshCw, Search, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { NovitaModel } from "@/types";
+import type { LLMModel } from "@/types";
 
 interface Props {
   value: string;
@@ -14,14 +14,16 @@ interface Props {
 }
 
 const DEFAULT_MODELS = [
-  "meta-llama/llama-3.1-8b-instruct",
+  "openai/gpt-4o-mini",
+  "openai/gpt-4o",
+  "anthropic/claude-3.5-sonnet",
+  "google/gemini-2.0-flash-001",
   "meta-llama/llama-3.1-70b-instruct",
-  "Nous-Hermes-2-Mixtral-8x7B-DPO",
-  "deepseek/deepseek-v3-0324",
+  "deepseek/deepseek-chat-v3-0324",
 ];
 
 export function ModelSelector({ value, onChange }: Props) {
-  const [models, setModels] = useState<NovitaModel[]>([]);
+  const [models, setModels] = useState<LLMModel[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
 
