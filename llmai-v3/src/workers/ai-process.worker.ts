@@ -12,7 +12,24 @@ import Papa from "papaparse";
 import type { JobConfig } from "@/types";
 
 const MAX_ROW_RETRIES = 3;
+const MAX_CACHE_SIZE = 100; // Keep max 100 images in memory (~50MB)
 const IMAGE_CACHE = new Map<string, string>(); // url → base64 data url
+
+function clearImageCache() {
+  IMAGE_CACHE.clear();
+}
+
+function trimCache() {
+  if (IMAGE_CACHE.size > MAX_CACHE_SIZE) {
+    // Remove oldest entries (first inserted)
+    const toRemove = IMAGE_CACHE.size - MAX_CACHE_SIZE;
+    const keys = IMAGE_CACHE.keys();
+    for (let i = 0; i < toRemove; i++) {
+      const key = keys.next().value;
+      if (key) IMAGE_CACHE.delete(key);
+    }
+  }
+}
 
 /**
  * Download image and convert to base64 data URL.
@@ -42,6 +59,7 @@ async function imageToBase64(url: string): Promise<string | null> {
     const dataUrl = `data:${contentType};base64,${base64}`;
 
     IMAGE_CACHE.set(url, dataUrl);
+    trimCache();
     return dataUrl;
   } catch (err) {
     console.warn(`[AI Process] Image download error: ${(err as Error).message} — ${url}`);
@@ -261,6 +279,10 @@ export async function aiProcessProcessor(job: BullJob) {
     await updateProgress(jobId, i + chunk.length, totalRows, 3, 5, errorLog.length, startTime);
   }
 
+  // Free memory — steps 4-5 are text-only, no images needed
+  clearImageCache();
+  console.log(`[AI Process] Image cache cleared. Steps 4-5 are text-only.`);
+
   // ====== STEP 4: SEO Title Generation (LLM, text-only) ======
   console.log(`[AI Process] Step 4: SEO title generation`);
   await prisma.job.update({ where: { id: jobId }, data: { currentPass: 4 } });
@@ -402,6 +424,9 @@ Return ONLY the description, nothing else.`;
   });
 
   await publishProgress(jobId, { status: "COMPLETED", processedRows: totalRows, totalRows });
+
+  // Final cleanup
+  clearImageCache();
 }
 
 async function updateProgress(
