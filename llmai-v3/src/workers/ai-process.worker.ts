@@ -12,70 +12,41 @@ import Papa from "papaparse";
 import type { JobConfig } from "@/types";
 
 const MAX_ROW_RETRIES = 3;
-const MAX_CACHE_SIZE = 100; // Keep max 100 images in memory (~50MB)
-const IMAGE_CACHE = new Map<string, string>(); // url → base64 data url
-
-function clearImageCache() {
-  IMAGE_CACHE.clear();
-}
-
-function trimCache() {
-  if (IMAGE_CACHE.size > MAX_CACHE_SIZE) {
-    // Remove oldest entries (first inserted)
-    const toRemove = IMAGE_CACHE.size - MAX_CACHE_SIZE;
-    const keys = IMAGE_CACHE.keys();
-    for (let i = 0; i < toRemove; i++) {
-      const key = keys.next().value;
-      if (key) IMAGE_CACHE.delete(key);
-    }
-  }
-}
 
 /**
- * Download image and convert to base64 data URL.
- * Caches results to avoid re-downloading same image.
+ * Download image → base64. No caching — used once per row then GC'd.
  */
-async function imageToBase64(url: string): Promise<string | null> {
+async function downloadImageBase64(url: string): Promise<string | null> {
   if (!url) return null;
-
-  const cached = IMAGE_CACHE.get(url);
-  if (cached) return cached;
-
   try {
     const resp = await fetch(url, {
       headers: { "User-Agent": "Mozilla/5.0 (compatible; LLMAI/3.0)" },
       redirect: "follow",
       signal: AbortSignal.timeout(30000),
     });
-
     if (!resp.ok) {
-      console.warn(`[AI Process] Failed to download image ${resp.status}: ${url}`);
+      console.warn(`[AI Process] Image download ${resp.status}: ${url}`);
       return null;
     }
-
     const contentType = resp.headers.get("content-type") || "image/jpeg";
     const buffer = await resp.arrayBuffer();
     const base64 = Buffer.from(buffer).toString("base64");
-    const dataUrl = `data:${contentType};base64,${base64}`;
-
-    IMAGE_CACHE.set(url, dataUrl);
-    trimCache();
-    return dataUrl;
+    return `data:${contentType};base64,${base64}`;
   } catch (err) {
-    console.warn(`[AI Process] Image download error: ${(err as Error).message} — ${url}`);
+    console.warn(`[AI Process] Image error: ${(err as Error).message} — ${url}`);
     return null;
   }
 }
 
 /**
- * Vision-capable chat completion — downloads image and sends as base64.
+ * Send vision request with base64 image (or text-only fallback).
  */
-async function visionCompletion(
+async function visionCall(
   apiKey: string,
   model: string,
   systemPrompt: string,
   userPrompt: string,
-  imageUrl: string,
+  base64Image: string | null,
   maxTokens: number
 ): Promise<string> {
   const BASE_URL = process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1";
@@ -83,9 +54,6 @@ async function visionCompletion(
   const messages: Record<string, unknown>[] = [
     { role: "system", content: systemPrompt },
   ];
-
-  // Download image and convert to base64
-  const base64Image = await imageToBase64(imageUrl);
 
   if (base64Image) {
     messages.push({
@@ -96,11 +64,7 @@ async function visionCompletion(
       ],
     });
   } else {
-    // Fallback: text-only if image download failed
-    messages.push({
-      role: "user",
-      content: `[Image could not be loaded from: ${imageUrl}]\n\n${userPrompt}`,
-    });
+    messages.push({ role: "user", content: userPrompt });
   }
 
   const resp = await fetch(`${BASE_URL}/chat/completions`, {
@@ -111,41 +75,157 @@ async function visionCompletion(
       "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
       "X-Title": "LLMAI v3.0",
     },
-    body: JSON.stringify({
-      model,
-      messages,
-      max_tokens: maxTokens,
-      temperature: 0.7,
-    }),
+    body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature: 0.7 }),
   });
 
   if (!resp.ok) {
     const text = await resp.text();
-    throw new Error(`OpenRouter API ${resp.status}: ${text}`);
+    throw new Error(`OpenRouter ${resp.status}: ${text.slice(0, 300)}`);
   }
 
   const data = await resp.json();
   return data.choices?.[0]?.message?.content || "";
 }
 
-async function retryCall<T>(
-  fn: () => Promise<T>,
-  retries: number,
-  context: string
-): Promise<T> {
-  let lastError: Error | null = null;
-  for (let attempt = 0; attempt < retries; attempt++) {
+async function retry<T>(fn: () => Promise<T>, retries: number, ctx: string): Promise<T> {
+  let lastErr: Error | null = null;
+  for (let i = 0; i < retries; i++) {
     try {
       return await fn();
     } catch (err) {
-      lastError = err as Error;
-      console.error(`[AI Process] ${context} attempt ${attempt + 1}/${retries} failed: ${(err as Error).message}`);
-      if (attempt < retries - 1) {
-        await new Promise((r) => setTimeout(r, Math.pow(2, attempt) * 1000));
-      }
+      lastErr = err as Error;
+      console.error(`[AI Process] ${ctx} attempt ${i + 1}/${retries}: ${(err as Error).message}`);
+      if (i < retries - 1) await new Promise((r) => setTimeout(r, Math.pow(2, i) * 1000));
     }
   }
-  throw lastError!;
+  throw lastErr!;
+}
+
+/**
+ * Process ALL 5 steps for a single row.
+ * Downloads image once, runs steps 1-3 (vision), frees image,
+ * then runs steps 4-5 (text-only).
+ */
+async function processRow(
+  row: Record<string, string>,
+  rowIdx: number,
+  apiKey: string,
+  visionModel: string,
+  config: JobConfig,
+  allowedTagNames: string,
+  allowedCatNames: string,
+  stopWords: StopWordEntry[],
+  errorLog: { row: number; step: string; error: string; retries: number }[]
+): Promise<void> {
+  const thumbUrl = row["thumbnail_url"] || row["thumb_url"] || "";
+  const title = row["title"] || "";
+  row["original_title"] = title;
+
+  // Download image ONCE for steps 1-3
+  const base64Image = await downloadImageBase64(thumbUrl);
+
+  // STEP 1: Tagging
+  try {
+    const result = await retry(
+      () => visionCall(apiKey, visionModel,
+        "You are an expert image tagger for adult content.",
+        "Analyze this image. Return ONLY a comma-separated list of descriptive tags (max 15). Tags: actions, body types, positions, clothing, setting, hair color, ethnicity. No explanations.",
+        base64Image, 200),
+      MAX_ROW_RETRIES, `S1 row${rowIdx}`
+    );
+    row["ai_tags"] = postprocessLLMResponse(result).replace(/\n/g, ", ");
+  } catch (err) {
+    row["ai_tags"] = "";
+    errorLog.push({ row: rowIdx, step: "1-tagging", error: (err as Error).message, retries: MAX_ROW_RETRIES });
+  }
+
+  // STEP 2: Scene Description
+  try {
+    const result = await retry(
+      () => visionCall(apiKey, visionModel,
+        "You describe adult content scenes concisely for SEO.",
+        "Describe this scene in 1-2 sentences. Be specific about what is happening, who is involved, the setting.",
+        base64Image, 150),
+      MAX_ROW_RETRIES, `S2 row${rowIdx}`
+    );
+    row["scene_description"] = postprocessLLMResponse(result);
+  } catch (err) {
+    row["scene_description"] = "";
+    errorLog.push({ row: rowIdx, step: "2-scene", error: (err as Error).message, retries: MAX_ROW_RETRIES });
+  }
+
+  // STEP 3: Content Type Detection
+  try {
+    const result = await retry(
+      () => visionCall(apiKey, visionModel,
+        "You identify content type and style from thumbnails.",
+        "Identify:\n1. Type (hentai/anime/3D/real/CGI/cartoon)\n2. Number of people\n3. Art style\n\nReturn ONLY:\nTYPE: <type>\nCOUNT: <number>\nSTYLE: <style or real>",
+        base64Image, 100),
+      MAX_ROW_RETRIES, `S3 row${rowIdx}`
+    );
+    row["content_type"] = postprocessLLMResponse(result);
+  } catch (err) {
+    row["content_type"] = "";
+    errorLog.push({ row: rowIdx, step: "3-type", error: (err as Error).message, retries: MAX_ROW_RETRIES });
+  }
+
+  // base64Image is now eligible for GC — no reference kept
+
+  // STEP 4: SEO Title (text-only LLM)
+  try {
+    const prompt = `Generate SEO NSFW title:\nOriginal: ${title}\nTags: ${row["ai_tags"]}\nScene: ${row["scene_description"]}\nType: ${row["content_type"]}\nExisting tags: ${row["tags"] || ""}\nCategories: ${row["categories"] || ""}${allowedTagNames ? `\nAllowed tags: [${allowedTagNames}]` : ""}${allowedCatNames ? `\nAllowed categories: [${allowedCatNames}]` : ""}\n\nMax 90 chars, English, natural, search-optimized. Return ONLY the title.`;
+
+    const result = await retry(
+      () => chatCompletion(apiKey, {
+        model: config.model || "openai/gpt-4o-mini",
+        systemPrompt: "Expert SEO title writer for adult content.",
+        userPrompt: prompt,
+        maxTokens: config.maxTokens || 100,
+        temperature: config.temperature || 0.7,
+        topP: config.topP || 1.0,
+        minP: config.minP || 0.0,
+        topK: config.topK || 40,
+        presencePenalty: config.presencePenalty || 0.2,
+        frequencyPenalty: config.frequencyPenalty || 0.4,
+        repetitionPenalty: config.repetitionPenalty || 1.2,
+      }),
+      MAX_ROW_RETRIES, `S4 row${rowIdx}`
+    );
+    let seoTitle = postprocessLLMResponse(result);
+    if (stopWords.length > 0) seoTitle = cleanText(seoTitle, stopWords);
+    row["seo_title"] = seoTitle.slice(0, 90);
+  } catch (err) {
+    row["seo_title"] = title;
+    errorLog.push({ row: rowIdx, step: "4-title", error: (err as Error).message, retries: MAX_ROW_RETRIES });
+  }
+
+  // STEP 5: SEO Description (text-only LLM)
+  try {
+    const prompt = `Generate SEO meta description:\nTitle: ${row["seo_title"]}\nTags: ${row["ai_tags"]}\nScene: ${row["scene_description"]}\nType: ${row["content_type"]}\n\nMax 160 chars, complements title, English, natural. Return ONLY the description.`;
+
+    const result = await retry(
+      () => chatCompletion(apiKey, {
+        model: config.model || "openai/gpt-4o-mini",
+        systemPrompt: "Expert SEO description writer.",
+        userPrompt: prompt,
+        maxTokens: 100,
+        temperature: config.temperature || 0.7,
+        topP: config.topP || 1.0,
+        minP: config.minP || 0.0,
+        topK: config.topK || 40,
+        presencePenalty: config.presencePenalty || 0.2,
+        frequencyPenalty: config.frequencyPenalty || 0.4,
+        repetitionPenalty: config.repetitionPenalty || 1.0,
+      }),
+      MAX_ROW_RETRIES, `S5 row${rowIdx}`
+    );
+    let seoDesc = postprocessLLMResponse(result);
+    if (stopWords.length > 0) seoDesc = cleanText(seoDesc, stopWords);
+    row["seo_description"] = seoDesc.slice(0, 160);
+  } catch (err) {
+    row["seo_description"] = "";
+    errorLog.push({ row: rowIdx, step: "5-desc", error: (err as Error).message, retries: MAX_ROW_RETRIES });
+  }
 }
 
 export async function aiProcessProcessor(job: BullJob) {
@@ -155,7 +235,7 @@ export async function aiProcessProcessor(job: BullJob) {
   const apiKey = process.env.OPENROUTER_API_KEY!;
   const visionModel = config.model || "xiaomi/mimo-v2-omni";
 
-  console.log(`[AI Process] Starting job ${jobId}, model: ${visionModel}`);
+  console.log(`[AI Process] Starting job ${jobId}, vision: ${visionModel}, rows: TBD`);
 
   await prisma.job.update({
     where: { id: jobId },
@@ -165,14 +245,16 @@ export async function aiProcessProcessor(job: BullJob) {
   const fileContent = fs.readFileSync(dbJob.inputFileUrl, "utf-8");
   const parsed = Papa.parse(fileContent, { header: true });
   const rows = parsed.data as Record<string, string>[];
+  const totalRows = rows.length;
 
   const allowedTags = await prisma.allowedTag.findMany();
   const allowedCategories = await prisma.allowedCategory.findMany();
+  const allowedTagNames = allowedTags.map((t) => t.name).join(", ");
+  const allowedCatNames = allowedCategories.map((c) => c.name).join(", ");
   const stopWords: StopWordEntry[] = (
     await prisma.stopWord.findMany({ where: { isActive: true } })
   ).map((w) => ({ word: w.word, replacement: w.replacement }));
 
-  const totalRows = rows.length;
   await prisma.job.update({
     where: { id: jobId },
     data: { totalRows, totalPasses: 5 },
@@ -181,228 +263,44 @@ export async function aiProcessProcessor(job: BullJob) {
   const errorLog: { row: number; step: string; error: string; retries: number }[] = [];
   const startTime = Date.now();
   const maxWorkers = config.maxWorkers || 3;
-  const chunkSize = config.chunkSize || 5;
 
-  // ====== STEP 1: Tagging (from thumbnail) ======
-  console.log(`[AI Process] Step 1: Tagging ${totalRows} thumbnails`);
-  await prisma.job.update({ where: { id: jobId }, data: { currentPass: 1 } });
+  console.log(`[AI Process] Processing ${totalRows} rows, concurrency: ${maxWorkers}`);
 
-  for (let i = 0; i < rows.length; i += chunkSize) {
-    const chunk = rows.slice(i, Math.min(i + chunkSize, rows.length));
-    const promises = chunk.map(async (row, idx) => {
-      const globalIdx = i + idx;
-      const thumbUrl = row["thumbnail_url"] || row["thumb_url"] || "";
-      try {
-        const result = await retryCall(
-          () => visionCompletion(
-            apiKey, visionModel,
-            "You are an expert image tagger for adult content. Analyze the image and return relevant tags.",
-            "Analyze this image. Return ONLY a comma-separated list of descriptive tags (max 15 tags). Tags should describe: actions, body types, positions, clothing, setting, hair color, ethnicity. Do NOT include explanations.",
-            thumbUrl, 200
-          ),
-          MAX_ROW_RETRIES,
-          `Step1 row ${globalIdx}`
-        );
-        row["ai_tags"] = postprocessLLMResponse(result).replace(/\n/g, ", ");
-      } catch (err) {
-        row["ai_tags"] = "";
-        errorLog.push({ row: globalIdx, step: "1-tagging", error: (err as Error).message, retries: MAX_ROW_RETRIES });
-      }
+  // Process rows in chunks with concurrency limit.
+  // Each row: download image → steps 1-3 (vision) → steps 4-5 (text) → done.
+  // Image freed after each row — RAM usage: maxWorkers * ~500KB max.
+  for (let i = 0; i < rows.length; i += maxWorkers) {
+    const chunk = rows.slice(i, Math.min(i + maxWorkers, rows.length));
+
+    await Promise.all(
+      chunk.map((row, idx) =>
+        processRow(row, i + idx, apiKey, visionModel, config, allowedTagNames, allowedCatNames, stopWords, errorLog)
+      )
+    );
+
+    const processed = Math.min(i + maxWorkers, totalRows);
+    const elapsed = (Date.now() - startTime) / 1000;
+    const speed = processed / elapsed;
+    const eta = Math.round((totalRows - processed) / speed) || 0;
+
+    // Determine which step we're conceptually on (for UI)
+    const currentStep = Math.min(5, Math.ceil((processed / totalRows) * 5) || 1);
+
+    await prisma.job.update({
+      where: { id: jobId },
+      data: { processedRows: processed, failedRows: errorLog.length, currentPass: currentStep },
     });
-    for (let b = 0; b < promises.length; b += maxWorkers) {
-      await Promise.all(promises.slice(b, b + maxWorkers));
-    }
-    await updateProgress(jobId, i + chunk.length, totalRows, 1, 5, errorLog.length, startTime);
-  }
 
-  // ====== STEP 2: Scene Description (from thumbnail) ======
-  console.log(`[AI Process] Step 2: Scene descriptions`);
-  await prisma.job.update({ where: { id: jobId }, data: { currentPass: 2 } });
-
-  for (let i = 0; i < rows.length; i += chunkSize) {
-    const chunk = rows.slice(i, Math.min(i + chunkSize, rows.length));
-    const promises = chunk.map(async (row, idx) => {
-      const globalIdx = i + idx;
-      const thumbUrl = row["thumbnail_url"] || row["thumb_url"] || "";
-      try {
-        const result = await retryCall(
-          () => visionCompletion(
-            apiKey, visionModel,
-            "You are an expert at describing adult content scenes concisely.",
-            "Describe this scene in 1-2 sentences. Be specific about what is happening, who is involved, and the setting. Keep it concise and descriptive for SEO purposes.",
-            thumbUrl, 150
-          ),
-          MAX_ROW_RETRIES,
-          `Step2 row ${globalIdx}`
-        );
-        row["scene_description"] = postprocessLLMResponse(result);
-      } catch (err) {
-        row["scene_description"] = "";
-        errorLog.push({ row: globalIdx, step: "2-scene", error: (err as Error).message, retries: MAX_ROW_RETRIES });
-      }
+    await publishProgress(jobId, {
+      status: "RUNNING",
+      processedRows: processed,
+      totalRows,
+      failedRows: errorLog.length,
+      currentPass: currentStep,
+      totalPasses: 5,
+      eta,
+      speed: Math.round(speed * 10) / 10,
     });
-    for (let b = 0; b < promises.length; b += maxWorkers) {
-      await Promise.all(promises.slice(b, b + maxWorkers));
-    }
-    await updateProgress(jobId, i + chunk.length, totalRows, 2, 5, errorLog.length, startTime);
-  }
-
-  // ====== STEP 3: Model/Character Detection (from thumbnail) ======
-  console.log(`[AI Process] Step 3: Model detection`);
-  await prisma.job.update({ where: { id: jobId }, data: { currentPass: 3 } });
-
-  for (let i = 0; i < rows.length; i += chunkSize) {
-    const chunk = rows.slice(i, Math.min(i + chunkSize, rows.length));
-    const promises = chunk.map(async (row, idx) => {
-      const globalIdx = i + idx;
-      const thumbUrl = row["thumbnail_url"] || row["thumb_url"] || "";
-      try {
-        const result = await retryCall(
-          () => visionCompletion(
-            apiKey, visionModel,
-            "You are an expert at identifying content type and style from thumbnails.",
-            "Based on this image, identify:\n1. Content type (hentai/anime/3D/real/CGI/cartoon)\n2. Number of people/characters\n3. Art style if animated\n\nReturn ONLY in format:\nTYPE: <type>\nCOUNT: <number>\nSTYLE: <style or 'real'>",
-            thumbUrl, 100
-          ),
-          MAX_ROW_RETRIES,
-          `Step3 row ${globalIdx}`
-        );
-        row["content_type"] = postprocessLLMResponse(result);
-      } catch (err) {
-        row["content_type"] = "";
-        errorLog.push({ row: globalIdx, step: "3-model", error: (err as Error).message, retries: MAX_ROW_RETRIES });
-      }
-    });
-    for (let b = 0; b < promises.length; b += maxWorkers) {
-      await Promise.all(promises.slice(b, b + maxWorkers));
-    }
-    await updateProgress(jobId, i + chunk.length, totalRows, 3, 5, errorLog.length, startTime);
-  }
-
-  // Free memory — steps 4-5 are text-only, no images needed
-  clearImageCache();
-  console.log(`[AI Process] Image cache cleared. Steps 4-5 are text-only.`);
-
-  // ====== STEP 4: SEO Title Generation (LLM, text-only) ======
-  console.log(`[AI Process] Step 4: SEO title generation`);
-  await prisma.job.update({ where: { id: jobId }, data: { currentPass: 4 } });
-
-  const allowedTagNames = allowedTags.map((t) => t.name).join(", ");
-  const allowedCatNames = allowedCategories.map((c) => c.name).join(", ");
-
-  for (let i = 0; i < rows.length; i += chunkSize) {
-    const chunk = rows.slice(i, Math.min(i + chunkSize, rows.length));
-    const promises = chunk.map(async (row, idx) => {
-      const globalIdx = i + idx;
-      const title = row["title"] || "";
-      row["original_title"] = title;
-
-      const prompt = `Generate an SEO-optimized NSFW title based on:
-
-Original title: ${title}
-AI tags: ${row["ai_tags"] || ""}
-Scene: ${row["scene_description"] || ""}
-Content type: ${row["content_type"] || ""}
-Existing tags: ${row["tags"] || ""}
-Existing categories: ${row["categories"] || ""}
-${allowedTagNames ? `Allowed tags: [${allowedTagNames}]` : ""}
-${allowedCatNames ? `Allowed categories: [${allowedCatNames}]` : ""}
-
-Requirements:
-- Max 90 characters
-- Include relevant keywords
-- Natural, engaging, search-optimized for 2026
-- English only
-
-Return ONLY the title, nothing else.`;
-
-      try {
-        const result = await retryCall(
-          () => chatCompletion(apiKey, {
-            model: config.model || "openai/gpt-4o-mini",
-            systemPrompt: "You are an expert SEO title writer for adult content. Generate compelling, search-optimized titles.",
-            userPrompt: prompt,
-            maxTokens: config.maxTokens || 100,
-            temperature: config.temperature || 0.7,
-            topP: config.topP || 1.0,
-            minP: config.minP || 0.0,
-            topK: config.topK || 40,
-            presencePenalty: config.presencePenalty || 0.2,
-            frequencyPenalty: config.frequencyPenalty || 0.4,
-            repetitionPenalty: config.repetitionPenalty || 1.2,
-          }),
-          MAX_ROW_RETRIES,
-          `Step4 row ${globalIdx}`
-        );
-
-        let seoTitle = postprocessLLMResponse(result);
-        if (stopWords.length > 0) seoTitle = cleanText(seoTitle, stopWords);
-        row["seo_title"] = seoTitle.slice(0, 90);
-      } catch (err) {
-        row["seo_title"] = title;
-        errorLog.push({ row: globalIdx, step: "4-title", error: (err as Error).message, retries: MAX_ROW_RETRIES });
-      }
-    });
-    for (let b = 0; b < promises.length; b += maxWorkers) {
-      await Promise.all(promises.slice(b, b + maxWorkers));
-    }
-    await updateProgress(jobId, i + chunk.length, totalRows, 4, 5, errorLog.length, startTime);
-  }
-
-  // ====== STEP 5: SEO Description Generation (LLM, text-only) ======
-  console.log(`[AI Process] Step 5: SEO description generation`);
-  await prisma.job.update({ where: { id: jobId }, data: { currentPass: 5 } });
-
-  for (let i = 0; i < rows.length; i += chunkSize) {
-    const chunk = rows.slice(i, Math.min(i + chunkSize, rows.length));
-    const promises = chunk.map(async (row, idx) => {
-      const globalIdx = i + idx;
-
-      const prompt = `Generate an SEO meta description based on:
-
-Title: ${row["seo_title"] || row["title"] || ""}
-Tags: ${row["ai_tags"] || ""}
-Scene: ${row["scene_description"] || ""}
-Content type: ${row["content_type"] || ""}
-
-Requirements:
-- Max 160 characters
-- Complement the title with secondary keywords
-- Natural, engaging, optimized for search in 2026
-
-Return ONLY the description, nothing else.`;
-
-      try {
-        const result = await retryCall(
-          () => chatCompletion(apiKey, {
-            model: config.model || "openai/gpt-4o-mini",
-            systemPrompt: "You are an expert SEO description writer. Generate concise, compelling meta descriptions.",
-            userPrompt: prompt,
-            maxTokens: 100,
-            temperature: config.temperature || 0.7,
-            topP: config.topP || 1.0,
-            minP: config.minP || 0.0,
-            topK: config.topK || 40,
-            presencePenalty: config.presencePenalty || 0.2,
-            frequencyPenalty: config.frequencyPenalty || 0.4,
-            repetitionPenalty: config.repetitionPenalty || 1.0,
-          }),
-          MAX_ROW_RETRIES,
-          `Step5 row ${globalIdx}`
-        );
-
-        let seoDesc = postprocessLLMResponse(result);
-        if (stopWords.length > 0) seoDesc = cleanText(seoDesc, stopWords);
-        row["seo_description"] = seoDesc.slice(0, 160);
-      } catch (err) {
-        row["seo_description"] = "";
-        errorLog.push({ row: globalIdx, step: "5-description", error: (err as Error).message, retries: MAX_ROW_RETRIES });
-      }
-    });
-    for (let b = 0; b < promises.length; b += maxWorkers) {
-      await Promise.all(promises.slice(b, b + maxWorkers));
-    }
-    await updateProgress(jobId, i + chunk.length, totalRows, 5, 5, errorLog.length, startTime);
   }
 
   // Write output
@@ -410,7 +308,7 @@ Return ONLY the description, nothing else.`;
   fs.writeFileSync(outputPath, Papa.unparse(rows), "utf-8");
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-  console.log(`[AI Process] Job ${jobId} completed in ${elapsed}s. Rows: ${totalRows}, Errors: ${errorLog.length}`);
+  console.log(`[AI Process] Job ${jobId} done in ${elapsed}s. Rows: ${totalRows}, Errors: ${errorLog.length}`);
 
   await prisma.job.update({
     where: { id: jobId },
@@ -424,39 +322,4 @@ Return ONLY the description, nothing else.`;
   });
 
   await publishProgress(jobId, { status: "COMPLETED", processedRows: totalRows, totalRows });
-
-  // Final cleanup
-  clearImageCache();
-}
-
-async function updateProgress(
-  jobId: string,
-  processed: number,
-  total: number,
-  step: number,
-  totalSteps: number,
-  errors: number,
-  startTime: number
-) {
-  const elapsed = (Date.now() - startTime) / 1000;
-  const totalDone = (step - 1) * total + processed;
-  const totalWork = totalSteps * total;
-  const speed = totalDone / elapsed;
-  const eta = Math.round((totalWork - totalDone) / speed) || 0;
-
-  await prisma.job.update({
-    where: { id: jobId },
-    data: { processedRows: processed, failedRows: errors },
-  });
-
-  await publishProgress(jobId, {
-    status: "RUNNING",
-    processedRows: processed,
-    totalRows: total,
-    failedRows: errors,
-    currentPass: step,
-    totalPasses: totalSteps,
-    eta,
-    speed: Math.round(speed * 10) / 10,
-  });
 }
