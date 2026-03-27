@@ -65,7 +65,7 @@ function LanguageGrid({
 
 export default function TranslatePage() {
   const [fileUrl, setFileUrl] = useState("");
-  const [model, setModel] = useState("meta-llama/llama-3.1-8b-instruct");
+  const [model, setModel] = useState("openai/gpt-4o-mini");
   const [config, setConfig] = useState<JobConfig>({
     systemPrompt: "You are a professional translator.",
     maxTokens: 512, temperature: 0.7, topP: 1.0, minP: 0.0, topK: 40,

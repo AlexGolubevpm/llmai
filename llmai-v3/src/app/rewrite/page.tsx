@@ -21,7 +21,7 @@ import { pageVariants } from "@/lib/animations";
 export default function RewritePage() {
   const [fileUrl, setFileUrl] = useState("");
   const [lineCount, setLineCount] = useState(0);
-  const [model, setModel] = useState("meta-llama/llama-3.1-8b-instruct");
+  const [model, setModel] = useState("openai/gpt-4o-mini");
   const [config, setConfig] = useState<JobConfig>({
     systemPrompt: "You are a helpful assistant.",
     maxTokens: 512,

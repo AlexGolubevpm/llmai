@@ -80,10 +80,10 @@ DB_PASSWORD=${DB_PASSWORD}
 # Redis
 REDIS_URL=redis://redis:6379
 
-# Novita AI — CHANGE THIS!
-NOVITA_API_KEY=sk_your_key_here
-NOVITA_BASE_URL=https://api.novita.ai/openai
-NOVITA_RATE_LIMIT=60
+# openrouter AI — CHANGE THIS!
+OPENROUTER_API_KEY=sk_your_key_here
+OPENROUTER_BASE_URL=https://api.openrouter.ai/openai
+# removed=60
 
 # WD Tagger
 WD_TAGGER_URL=https://deepghs-wd-tagger-heatmap-more-models.hf.space
@@ -128,9 +128,9 @@ echo "  Container status:"
 docker compose -f docker-compose.prod.yml ps
 echo ""
 echo "  NEXT STEPS:"
-echo "  1. Edit Novita API key:"
+echo "  1. Edit openrouter API key:"
 echo "     nano ${DEPLOY_DIR}/llmai-v3/.env"
-echo "     (change NOVITA_API_KEY=sk_your_key_here)"
+echo "     (change OPENROUTER_API_KEY=sk_your_key_here)"
 echo ""
 echo "  2. Restart after edit:"
 echo "     cd ${DEPLOY_DIR}/llmai-v3"

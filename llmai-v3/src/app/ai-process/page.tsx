@@ -25,7 +25,7 @@ const STEPS = [
 export default function AIProcessPage() {
   const [fileUrl, setFileUrl] = useState("");
   const [lineCount, setLineCount] = useState(0);
-  const [model, setModel] = useState("meta-llama/llama-3.1-8b-instruct");
+  const [model, setModel] = useState("openai/gpt-4o-mini");
   const [config, setConfig] = useState<JobConfig>({
     systemPrompt: "You are an expert SEO content writer.",
     maxTokens: 300, temperature: 0.7, topP: 1.0, minP: 0.0, topK: 40,

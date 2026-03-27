@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
     }
 
     const data = {
-      model: model || "meta-llama/llama-3.1-8b-instruct",
+      model: model || "openai/gpt-4o-mini",
       systemPrompt: systemPrompt || "You are a helpful assistant.",
       maxTokens: maxTokens || 512,
       temperature: temperature ?? 0.7,

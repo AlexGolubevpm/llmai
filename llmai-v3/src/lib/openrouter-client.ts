@@ -1,9 +1,19 @@
-import type { ChatCompletionParams, NovitaModel } from "@/types";
+/**
+ * OpenRouter API client.
+ *
+ * OpenRouter is OpenAI-compatible:
+ * - Base URL: https://openrouter.ai/api/v1
+ * - Auth: Authorization: Bearer <key>
+ * - Endpoints: /chat/completions, /models
+ * - Extra header: HTTP-Referer, X-Title for rankings
+ */
+
+import type { ChatCompletionParams, LLMModel } from "@/types";
 import { redis } from "./redis";
 
-const BASE_URL = process.env.NOVITA_BASE_URL || "https://api.novita.ai/openai";
+const BASE_URL = process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1";
 const MAX_RETRIES = 5;
-const MODELS_CACHE_KEY = "novita:models";
+const MODELS_CACHE_KEY = "openrouter:models";
 const MODELS_CACHE_TTL = 3600; // 1 hour
 
 function sleep(ms: number) {
@@ -24,9 +34,13 @@ async function fetchWithRetry(
       if (resp.ok) return resp;
 
       if (resp.status === 429 || resp.status >= 500) {
-        const backoff = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s, 8s, 16s
+        // Check for Retry-After header
+        const retryAfter = resp.headers.get("retry-after");
+        const backoff = retryAfter
+          ? parseInt(retryAfter) * 1000
+          : Math.pow(2, attempt) * 1000;
         console.warn(
-          `Novita API ${resp.status}, retry ${attempt + 1}/${retries} in ${backoff}ms`
+          `OpenRouter API ${resp.status}, retry ${attempt + 1}/${retries} in ${backoff}ms`
         );
         await sleep(backoff);
         continue;
@@ -34,10 +48,13 @@ async function fetchWithRetry(
 
       // Non-retryable error
       const text = await resp.text();
-      throw new Error(`Novita API error ${resp.status}: ${text}`);
+      throw new Error(`OpenRouter API error ${resp.status}: ${text}`);
     } catch (err) {
       lastError = err as Error;
-      if (attempt < retries - 1 && (err as Error).message?.includes("fetch")) {
+      if (
+        attempt < retries - 1 &&
+        (err as Error).message?.includes("fetch")
+      ) {
         const backoff = Math.pow(2, attempt) * 1000;
         await sleep(backoff);
         continue;
@@ -52,10 +69,12 @@ function getHeaders(apiKey: string) {
   return {
     "Content-Type": "application/json",
     Authorization: `Bearer ${apiKey}`,
+    "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
+    "X-Title": "LLMAI v3.0",
   };
 }
 
-export async function listModels(apiKey: string): Promise<NovitaModel[]> {
+export async function listModels(apiKey: string): Promise<LLMModel[]> {
   // Check cache first
   const cached = await redis.get(MODELS_CACHE_KEY);
   if (cached) {
@@ -68,10 +87,14 @@ export async function listModels(apiKey: string): Promise<NovitaModel[]> {
   });
 
   const data = await resp.json();
-  const models: NovitaModel[] = (data.data || []).map(
-    (m: { id: string; object?: string }) => ({
+  const models: LLMModel[] = (data.data || []).map(
+    (m: { id: string; name?: string; context_length?: number; pricing?: { prompt?: string; completion?: string } }) => ({
       id: m.id,
-      object: m.object || "model",
+      object: "model",
+      name: m.name || m.id,
+      contextLength: m.context_length || 0,
+      promptPrice: m.pricing?.prompt || "0",
+      completionPrice: m.pricing?.completion || "0",
     })
   );
 
@@ -85,7 +108,7 @@ export async function chatCompletion(
   apiKey: string,
   params: ChatCompletionParams
 ): Promise<string> {
-  const payload = {
+  const payload: Record<string, unknown> = {
     model: params.model,
     messages: [
       { role: "system", content: params.systemPrompt },
@@ -94,12 +117,18 @@ export async function chatCompletion(
     max_tokens: params.maxTokens,
     temperature: params.temperature,
     top_p: params.topP,
-    min_p: params.minP,
-    top_k: params.topK,
-    presence_penalty: params.presencePenalty,
     frequency_penalty: params.frequencyPenalty,
+    presence_penalty: params.presencePenalty,
     repetition_penalty: params.repetitionPenalty,
   };
+
+  // OpenRouter supports top_k and min_p via provider routing
+  if (params.topK && params.topK > 0) {
+    payload.top_k = params.topK;
+  }
+  if (params.minP && params.minP > 0) {
+    payload.min_p = params.minP;
+  }
 
   const resp = await fetchWithRetry(`${BASE_URL}/chat/completions`, {
     method: "POST",

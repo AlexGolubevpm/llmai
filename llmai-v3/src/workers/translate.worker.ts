@@ -1,6 +1,6 @@
 import { type Job as BullJob } from "bullmq";
 import { prisma } from "@/lib/db";
-import { chatCompletion } from "@/lib/novita-client";
+import { chatCompletion } from "@/lib/openrouter-client";
 import { postprocessLLMResponse } from "@/lib/text-processing";
 import { publishProgress } from "@/lib/queue";
 import * as fs from "fs";
@@ -13,7 +13,7 @@ export async function translateProcessor(job: BullJob) {
   const { jobId } = job.data;
   const dbJob = await prisma.job.findUniqueOrThrow({ where: { id: jobId } });
   const config = dbJob.config as unknown as JobConfig;
-  const apiKey = process.env.NOVITA_API_KEY!;
+  const apiKey = process.env.OPENROUTER_API_KEY!;
 
   await prisma.job.update({
     where: { id: jobId },
@@ -49,7 +49,7 @@ export async function translateProcessor(job: BullJob) {
       for (let retry = 0; retry < MAX_ROW_RETRIES; retry++) {
         try {
           const raw = await chatCompletion(apiKey, {
-            model: config.model || "meta-llama/llama-3.1-8b-instruct",
+            model: config.model || "openai/gpt-4o-mini",
             systemPrompt: config.systemPrompt || "You are a professional translator.",
             userPrompt: `${userPrompt}\n${text}`,
             maxTokens: config.maxTokens || 512,

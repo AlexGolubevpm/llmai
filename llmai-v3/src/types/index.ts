@@ -117,7 +117,11 @@ export interface WDTaggerResult {
   caption: string;
 }
 
-export interface NovitaModel {
+export interface LLMModel {
   id: string;
   object: string;
+  name?: string;
+  contextLength?: number;
+  promptPrice?: string;
+  completionPrice?: string;
 }
