@@ -10,38 +10,27 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FileUpload } from "@/components/file-upload";
 import { ModelSelector } from "@/components/model-selector";
-import { PresetSelector } from "@/components/preset-selector";
 import { JobProgress } from "@/components/job-progress";
 import { PageHeader } from "@/components/layout/page-header";
-import type { JobConfig } from "@/types";
-import { Play, Eye, PenLine, FileText, Type } from "lucide-react";
+import { Play, FileText, Type } from "lucide-react";
 import { toast } from "sonner";
 import { pageVariants } from "@/lib/animations";
 
-const DEFAULT_VISION_PROMPT = `Analyze this image and return a JSON object with exactly these fields:
+const DEFAULT_PROMPT = `Analyze this image and the provided context. Return a JSON object with these fields:
+
 1. "tags": comma-separated list of up to 15 descriptive tags (actions, body types, positions, clothing, setting, hair color, ethnicity)
 2. "scene": 1-2 sentence description of what is happening in the scene
-3. "type": content type and style, format: "<type> | <count> people | <style>" where type is one of: hentai, anime, 3D, real, CGI, cartoon
-
-Return ONLY valid JSON, no markdown, no explanation:
-{"tags":"tag1, tag2, ...","scene":"...","type":"..."}`;
-
-const DEFAULT_SEO_PROMPT = `Based on the context below, generate SEO-optimized title and description.
+3. "type": content type (hentai/anime/3D/real/CGI/cartoon), number of people, art style
+4. "title": SEO-optimized title, max 90 characters, English, engaging, search-optimized for 2026
+5. "description": SEO meta description, max 160 characters, complements the title
 
 Context:
 Original title: {title}
-Tags: {tags}
-Scene: {scene}
-Content type: {type}
 Existing tags: {existing_tags}
 Categories: {categories}
 
-Requirements:
-- title: max 90 characters, English, natural, engaging, search-optimized for 2026
-- description: max 160 characters, complements the title with secondary keywords
-
-Return ONLY valid JSON, no markdown:
-{"title":"...","description":"..."}`;
+Return ONLY valid JSON, no markdown, no explanation:
+{"tags":"...","scene":"...","type":"...","title":"...","description":"..."}`;
 
 export default function AIProcessPage() {
   const [fileUrl, setFileUrl] = useState("");
@@ -50,21 +39,12 @@ export default function AIProcessPage() {
   const [textTitle, setTextTitle] = useState("");
   const [textThumb, setTextThumb] = useState("");
 
-  // Step 1: Vision
-  const [visionModel, setVisionModel] = useState("xiaomi/mimo-v2-omni");
-  const [visionPrompt, setVisionPrompt] = useState(DEFAULT_VISION_PROMPT);
-
-  // Step 2: SEO
-  const [textModel, setTextModel] = useState("openai/gpt-4o-mini");
-  const [seoPrompt, setSeoPrompt] = useState(DEFAULT_SEO_PROMPT);
-
-  // Shared params
-  const [config, setConfig] = useState<JobConfig>({
-    systemPrompt: "Expert SEO writer.",
-    maxTokens: 300, temperature: 0.7, topP: 1.0, minP: 0.0, topK: 40,
-    presencePenalty: 0.2, frequencyPenalty: 0.4, repetitionPenalty: 1.2,
-  });
+  const [model, setModel] = useState("google/gemini-2.5-flash-preview-05-20");
+  const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
+  const [temperature, setTemperature] = useState(0.7);
+  const [maxTokens, setMaxTokens] = useState(500);
   const [maxWorkers, setMaxWorkers] = useState(3);
+
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -92,13 +72,12 @@ export default function AIProcessPage() {
           type: "AI_PROCESS",
           inputFileUrl: jobFileUrl,
           config: {
-            ...config,
-            visionModel,
-            textModel,
-            visionPrompt,
-            seoPrompt,
+            visionModel: model,
+            model: model,
+            visionPrompt: prompt,
+            temperature,
+            maxTokens,
             maxWorkers,
-            chunkSize: 5,
             applyStopWords: true,
           },
         }),
@@ -113,122 +92,92 @@ export default function AIProcessPage() {
 
   return (
     <motion.div {...pageVariants} className="space-y-8">
-      <PageHeader title="AI Process 3.0" description="2-шаговый pipeline: Vision анализ → SEO генерация. Каждый шаг с отдельной моделью и промптом." />
-
-      {/* Pipeline visualization */}
-      <div className="grid grid-cols-2 gap-4">
-        <div className="rounded-xl border bg-[var(--surface)] p-5 flex items-center gap-4">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
-            <Eye className="h-5 w-5" />
-          </div>
-          <div>
-            <div className="text-xs font-medium text-[var(--text-muted)]">Шаг 1</div>
-            <div className="text-sm font-medium">Vision анализ</div>
-            <div className="text-xs text-[var(--text-muted)]">Теги + описание + тип контента</div>
-          </div>
-        </div>
-        <div className="rounded-xl border bg-[var(--surface)] p-5 flex items-center gap-4">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-green-50 text-green-600">
-            <PenLine className="h-5 w-5" />
-          </div>
-          <div>
-            <div className="text-xs font-medium text-[var(--text-muted)]">Шаг 2</div>
-            <div className="text-sm font-medium">SEO генерация</div>
-            <div className="text-xs text-[var(--text-muted)]">Title + Description</div>
-          </div>
-        </div>
-      </div>
+      <PageHeader
+        title="AI Process 3.0"
+        description="Один вызов на строку: анализ изображения → теги + описание + тип + SEO title + description"
+      />
 
       {activeJobId && <JobProgress jobId={activeJobId} onComplete={() => toast.success("AI Process завершён!")} />}
 
-      {/* Source data */}
-      <div className="rounded-xl border bg-[var(--surface)] p-6 space-y-5">
-        <h2 className="text-[15px] font-medium">Источник данных</h2>
-        <Tabs value={inputMode} onValueChange={(v) => v && setInputMode(v as "file" | "text")}>
-          <TabsList>
-            <TabsTrigger value="file" className="gap-1.5"><FileText className="h-3.5 w-3.5" /> Файл</TabsTrigger>
-            <TabsTrigger value="text" className="gap-1.5"><Type className="h-3.5 w-3.5" /> Одиночный тест</TabsTrigger>
-          </TabsList>
-          <TabsContent value="file" className="mt-4 space-y-4">
-            <FileUpload onUpload={(data) => { setFileUrl(data.fileUrl); setLineCount(data.lineCount); }} />
-            {lineCount > 0 && <p className="text-xs text-[var(--text-muted)]">{lineCount.toLocaleString()} строк</p>}
-          </TabsContent>
-          <TabsContent value="text" className="mt-4 space-y-4">
-            <div>
-              <Label className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">Тайтл</Label>
-              <Input value={textTitle} onChange={(e) => setTextTitle(e.target.value)} placeholder="Тайтл для тестирования..." className="mt-1.5" />
-            </div>
-            <div>
-              <Label className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">URL тумбы (опционально)</Label>
-              <Input value={textThumb} onChange={(e) => setTextThumb(e.target.value)} placeholder="https://example.com/thumb.jpg" className="mt-1.5" />
-            </div>
-          </TabsContent>
-        </Tabs>
-        <div>
-          <div className="flex items-baseline justify-between mb-2">
-            <Label className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">Потоки</Label>
-            <span className="text-xs font-mono text-[var(--text-secondary)]">{maxWorkers}</span>
-          </div>
-          <Slider value={[maxWorkers]} onValueChange={(v) => setMaxWorkers(typeof v === "number" ? v : v[0])} min={1} max={10} step={1} />
-        </div>
-      </div>
-
-      {/* Two-step config: side by side */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Step 1: Vision */}
-        <div className="rounded-xl border-2 border-blue-100 bg-[var(--surface)] p-6 space-y-5">
-          <div className="flex items-center gap-2">
-            <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-blue-50 text-blue-600">
-              <Eye className="h-3.5 w-3.5" />
-            </div>
-            <h2 className="text-[15px] font-medium">Шаг 1: Vision модель</h2>
+        {/* Left: Source + Settings */}
+        <div className="space-y-6">
+          <div className="rounded-xl border bg-[var(--surface)] p-6 space-y-5">
+            <h2 className="text-[15px] font-medium">Источник данных</h2>
+            <Tabs value={inputMode} onValueChange={(v) => v && setInputMode(v as "file" | "text")}>
+              <TabsList>
+                <TabsTrigger value="file" className="gap-1.5"><FileText className="h-3.5 w-3.5" /> Файл</TabsTrigger>
+                <TabsTrigger value="text" className="gap-1.5"><Type className="h-3.5 w-3.5" /> Тест</TabsTrigger>
+              </TabsList>
+              <TabsContent value="file" className="mt-4 space-y-4">
+                <FileUpload onUpload={(data) => { setFileUrl(data.fileUrl); setLineCount(data.lineCount); }} />
+                {lineCount > 0 && <p className="text-xs text-[var(--text-muted)]">{lineCount.toLocaleString()} строк</p>}
+              </TabsContent>
+              <TabsContent value="text" className="mt-4 space-y-4">
+                <div>
+                  <Label className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">Тайтл</Label>
+                  <Input value={textTitle} onChange={(e) => setTextTitle(e.target.value)} placeholder="Тайтл для тестирования..." className="mt-1.5" />
+                </div>
+                <div>
+                  <Label className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">URL тумбы</Label>
+                  <Input value={textThumb} onChange={(e) => setTextThumb(e.target.value)} placeholder="https://example.com/thumb.jpg" className="mt-1.5" />
+                </div>
+              </TabsContent>
+            </Tabs>
           </div>
-          <ModelSelector value={visionModel} onChange={setVisionModel} />
-          <div>
-            <Label className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">Промпт</Label>
-            <Textarea
-              value={visionPrompt}
-              onChange={(e) => setVisionPrompt(e.target.value)}
-              rows={8}
-              className="mt-1.5 font-mono text-xs"
-            />
-            <button onClick={() => setVisionPrompt(DEFAULT_VISION_PROMPT)} className="mt-1 text-xs text-[var(--accent-blue)] hover:underline">
-              Сбросить к дефолту
-            </button>
+
+          <div className="rounded-xl border bg-[var(--surface)] p-6 space-y-5">
+            <h2 className="text-[15px] font-medium">Модель</h2>
+            <ModelSelector value={model} onChange={setModel} />
+
+            <div className="grid grid-cols-2 gap-4 pt-2">
+              <div>
+                <div className="flex items-baseline justify-between mb-2">
+                  <Label className="text-xs font-mono text-[var(--text-muted)]">temperature</Label>
+                  <span className="text-xs font-mono font-medium">{temperature.toFixed(2)}</span>
+                </div>
+                <Slider value={[temperature]} onValueChange={(v) => setTemperature(typeof v === "number" ? v : v[0])} min={0} max={2} step={0.01} />
+              </div>
+              <div>
+                <div className="flex items-baseline justify-between mb-2">
+                  <Label className="text-xs font-mono text-[var(--text-muted)]">max_tokens</Label>
+                  <span className="text-xs font-mono font-medium">{maxTokens}</span>
+                </div>
+                <Slider value={[maxTokens]} onValueChange={(v) => setMaxTokens(typeof v === "number" ? v : v[0])} min={100} max={4000} step={10} />
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-baseline justify-between mb-2">
+                <Label className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">Потоки</Label>
+                <span className="text-xs font-mono text-[var(--text-secondary)]">{maxWorkers}</span>
+              </div>
+              <Slider value={[maxWorkers]} onValueChange={(v) => setMaxWorkers(typeof v === "number" ? v : v[0])} min={1} max={10} step={1} />
+            </div>
           </div>
         </div>
 
-        {/* Step 2: SEO */}
-        <div className="rounded-xl border-2 border-green-100 bg-[var(--surface)] p-6 space-y-5">
-          <div className="flex items-center gap-2">
-            <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-green-50 text-green-600">
-              <PenLine className="h-3.5 w-3.5" />
-            </div>
-            <h2 className="text-[15px] font-medium">Шаг 2: Text модель</h2>
-          </div>
-          <ModelSelector value={textModel} onChange={setTextModel} />
-          <div>
-            <Label className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">Промпт</Label>
-            <Textarea
-              value={seoPrompt}
-              onChange={(e) => setSeoPrompt(e.target.value)}
-              rows={8}
-              className="mt-1.5 font-mono text-xs"
-            />
-            <p className="mt-1 text-xs text-[var(--text-muted)]">
-              Переменные: {"{title}"}, {"{tags}"}, {"{scene}"}, {"{type}"}, {"{existing_tags}"}, {"{categories}"}
-            </p>
-            <button onClick={() => setSeoPrompt(DEFAULT_SEO_PROMPT)} className="mt-1 text-xs text-[var(--accent-blue)] hover:underline">
-              Сбросить к дефолту
+        {/* Right: Prompt */}
+        <div className="rounded-xl border bg-[var(--surface)] p-6 space-y-5">
+          <div className="flex items-center justify-between">
+            <h2 className="text-[15px] font-medium">Промпт</h2>
+            <button onClick={() => setPrompt(DEFAULT_PROMPT)} className="text-xs text-[var(--accent-blue)] hover:underline">
+              Сбросить
             </button>
           </div>
+          <Textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            rows={22}
+            className="font-mono text-xs"
+          />
+          <p className="text-xs text-[var(--text-muted)]">
+            Переменные: <code>{"{title}"}</code>, <code>{"{existing_tags}"}</code>, <code>{"{categories}"}</code>
+          </p>
+          <div className="rounded-lg bg-[var(--surface-raised)] px-4 py-3 text-xs text-[var(--text-muted)]">
+            <strong>Выходные поля JSON:</strong> tags, scene, type, title, description — всё в одном вызове
+          </div>
         </div>
-      </div>
-
-      {/* Shared generation params */}
-      <div className="rounded-xl border bg-[var(--surface)] p-6 space-y-5">
-        <h2 className="text-[15px] font-medium">Параметры генерации (шаг 2)</h2>
-        <PresetSelector value={config} onChange={setConfig} onModelChange={setTextModel} />
       </div>
 
       <Button
@@ -237,7 +186,7 @@ export default function AIProcessPage() {
         disabled={submitting || (inputMode === "file" ? !fileUrl : !textTitle.trim())}
         className="w-full h-12 text-sm font-medium gap-2"
       >
-        <Play className="h-4 w-4" />{submitting ? "Запуск..." : "Запустить AI Process 3.0"}
+        <Play className="h-4 w-4" />{submitting ? "Запуск..." : "Запустить AI Process"}
       </Button>
     </motion.div>
   );
