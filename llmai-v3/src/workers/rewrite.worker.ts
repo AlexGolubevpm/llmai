@@ -92,7 +92,17 @@ export async function rewriteProcessor(job: BullJob) {
     const startTime = Date.now();
 
     // Process in chunks with concurrency limit
+    let cancelled = false;
     for (let i = 0; i < currentData.length; i += chunkSize) {
+      // Check cancellation every 5 chunks
+      if (i > 0 && i % (chunkSize * 5) === 0) {
+        const fresh = await prisma.job.findUnique({ where: { id: jobId }, select: { status: true } });
+        if (fresh?.status === "CANCELLED") {
+          console.log(`[Rewrite] Job ${jobId} cancelled at pass ${pass}, row ${i}`);
+          cancelled = true;
+          break;
+        }
+      }
       const chunk = currentData.slice(i, Math.min(i + chunkSize, currentData.length));
       const chunkPromises: Promise<RowResult>[] = chunk.map((text, idx) => {
         const globalIdx = i + idx;
@@ -177,6 +187,7 @@ export async function rewriteProcessor(job: BullJob) {
     }
 
     currentData = results;
+    if (cancelled) break;
   }
 
   // Write output

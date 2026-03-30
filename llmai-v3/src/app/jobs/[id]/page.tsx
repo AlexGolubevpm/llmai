@@ -154,44 +154,67 @@ export default function JobDetailPage() {
         </pre>
       </div>
 
-      {/* Error log */}
-      {errorLog.length > 0 && (
+      {/* Error log — deduplicated */}
+      {errorLog.length > 0 && (() => {
+        // Group errors by message to show unique errors with count
+        const grouped = new Map<string, { step: string; error: string; count: number; rows: number[] }>();
+        for (const err of errorLog) {
+          const key = `${(err as any).step || ""}::${err.error}`;
+          const existing = grouped.get(key);
+          if (existing) {
+            existing.count++;
+            if (existing.rows.length < 5) existing.rows.push(err.row);
+          } else {
+            grouped.set(key, { step: (err as any).step || "", error: err.error, count: 1, rows: [err.row] });
+          }
+        }
+        const uniqueErrors = [...grouped.values()].sort((a, b) => b.count - a.count);
+
+        return (
         <div className="rounded-xl border border-red-200 bg-[var(--error-light)] p-6">
           <div className="flex items-center gap-2 mb-4">
             <AlertTriangle className="h-4 w-4 text-[var(--error)]" />
             <h3 className="text-[15px] font-medium text-[var(--error)]">
-              Лог ошибок ({errorLog.length})
+              Ошибки: {errorLog.length} всего, {uniqueErrors.length} уникальных
             </h3>
           </div>
-          <div className="max-h-80 overflow-auto rounded-lg border bg-[var(--surface)]">
+          <div className="max-h-96 overflow-auto rounded-lg border bg-[var(--surface)]">
             <Table>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
-                  <TableHead className="text-xs w-20">Строка</TableHead>
+                  <TableHead className="text-xs w-16">Кол-во</TableHead>
+                  {uniqueErrors.some((e) => e.step) && <TableHead className="text-xs w-24">Шаг</TableHead>}
                   <TableHead className="text-xs">Ошибка</TableHead>
-                  <TableHead className="text-xs w-20">Retries</TableHead>
+                  <TableHead className="text-xs w-28">Строки</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {errorLog.slice(0, 100).map((err, i) => (
+                {uniqueErrors.map((err, i) => (
                   <TableRow key={i} className="hover:bg-[var(--surface-raised)]">
-                    <TableCell className="font-mono text-xs">{err.row}</TableCell>
-                    <TableCell className="text-xs text-[var(--error)] max-w-md truncate">
-                      {err.error}
+                    <TableCell>
+                      <span className="inline-flex items-center justify-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-[var(--error)]">
+                        {err.count}x
+                      </span>
                     </TableCell>
-                    <TableCell className="font-mono text-xs">{err.retries}</TableCell>
+                    {uniqueErrors.some((e) => e.step) && (
+                      <TableCell className="font-mono text-xs text-[var(--text-muted)]">
+                        {err.step || "—"}
+                      </TableCell>
+                    )}
+                    <TableCell className="text-xs text-[var(--error)] max-w-lg">
+                      <div className="truncate" title={err.error}>{err.error}</div>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs text-[var(--text-muted)]">
+                      {err.rows.join(", ")}{err.count > 5 ? "..." : ""}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
-            {errorLog.length > 100 && (
-              <p className="px-4 py-2 text-xs text-[var(--text-muted)]">
-                Показано 100 из {errorLog.length} ошибок
-              </p>
-            )}
           </div>
         </div>
-      )}
+        );
+      })()}
     </motion.div>
   );
 }

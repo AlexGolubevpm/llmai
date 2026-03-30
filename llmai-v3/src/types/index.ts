@@ -49,6 +49,7 @@ export interface Job {
 
 export interface ErrorLogEntry {
   row: number;
+  step?: string;
   error: string;
   retries: number;
 }
