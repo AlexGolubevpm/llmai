@@ -120,8 +120,8 @@ export default function DashboardPage() {
                       </span>
                     </TableCell>
                     <TableCell>
-                      <span className="text-xs font-mono text-[var(--text-muted)] truncate max-w-[150px] block" title={(job.config as any)?.model || "—"}>
-                        {((job.config as any)?.model || "—").split("/").pop()}
+                      <span className="text-xs font-mono text-[var(--text-muted)] truncate max-w-[150px] block" title={(job.config as any)?.visionModel || (job.config as any)?.model || "—"}>
+                        {((job.config as any)?.visionModel || (job.config as any)?.model || "—").split("/").pop()}
                       </span>
                     </TableCell>
                     <TableCell>
