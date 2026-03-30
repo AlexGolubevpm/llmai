@@ -45,6 +45,35 @@ Requirements:
 Return ONLY valid JSON, no markdown:
 {"title":"...","description":"..."}`;
 
+// ---- Image download ----
+
+/**
+ * Download image from URL → base64 data URL.
+ * Our server downloads because vision model providers often can't reach external sites.
+ * No caching — each image used once then GC'd.
+ */
+async function downloadImageBase64(url: string): Promise<string | null> {
+  if (!url) return null;
+  try {
+    const resp = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; LLMAI/3.0)" },
+      redirect: "follow",
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!resp.ok) {
+      console.warn(`[AI Process] Image download ${resp.status}: ${url}`);
+      return null;
+    }
+    const contentType = resp.headers.get("content-type") || "image/jpeg";
+    const buffer = await resp.arrayBuffer();
+    const base64 = Buffer.from(buffer).toString("base64");
+    return `data:${contentType};base64,${base64}`;
+  } catch (err) {
+    console.warn(`[AI Process] Image error: ${(err as Error).message} — ${url}`);
+    return null;
+  }
+}
+
 // ---- Vision call ----
 
 async function visionCall(
@@ -203,9 +232,12 @@ export async function aiProcessProcessor(job: BullJob) {
       const globalIdx = i + idx;
       const thumbUrl = row["thumbnail_url"] || row["thumb_url"] || "";
 
+      // Download image on our server → base64 (providers can't always reach external URLs)
+      const imageData = await downloadImageBase64(thumbUrl);
+
       try {
         const raw = await retry(
-          () => visionCall(apiKey, visionModel, "You analyze images and return structured JSON.", visionPrompt, thumbUrl, temperature, 300),
+          () => visionCall(apiKey, visionModel, "You analyze images and return structured JSON.", visionPrompt, imageData, temperature, 300),
           MAX_RETRIES, `S1 row${globalIdx}`
         );
 
