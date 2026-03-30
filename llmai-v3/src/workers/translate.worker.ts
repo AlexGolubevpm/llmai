@@ -40,6 +40,14 @@ export async function translateProcessor(job: BullJob) {
   const startTime = Date.now();
 
   for (let i = 0; i < rows.length; i += chunkSize) {
+    // Check cancellation
+    if (i > 0 && i % (chunkSize * 5) === 0) {
+      const fresh = await prisma.job.findUnique({ where: { id: jobId }, select: { status: true } });
+      if (fresh?.status === "CANCELLED") {
+        console.log(`[Translate] Job ${jobId} cancelled at row ${i}`);
+        break;
+      }
+    }
     const chunk = rows.slice(i, Math.min(i + chunkSize, rows.length));
 
     const promises = chunk.map(async (row, idx) => {

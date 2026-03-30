@@ -185,7 +185,18 @@ export async function aiProcessProcessor(job: BullJob) {
   console.log(`[AI Process] Step 1: Vision analysis (${totalRows} rows)`);
   await prisma.job.update({ where: { id: jobId }, data: { currentPass: 1 } });
 
+  let cancelled = false;
   for (let i = 0; i < rows.length; i += maxWorkers) {
+    // Check cancellation every chunk
+    if (i > 0 && i % (maxWorkers * 5) === 0) {
+      const fresh = await prisma.job.findUnique({ where: { id: jobId }, select: { status: true } });
+      if (fresh?.status === "CANCELLED") {
+        console.log(`[AI Process] Job ${jobId} cancelled at step 1, row ${i}`);
+        cancelled = true;
+        break;
+      }
+    }
+
     const chunk = rows.slice(i, Math.min(i + maxWorkers, rows.length));
 
     await Promise.all(chunk.map(async (row, idx) => {
@@ -240,6 +251,7 @@ export async function aiProcessProcessor(job: BullJob) {
   // ==========================================
   // STEP 2: SEO — title + description
   // ==========================================
+  if (!cancelled) {
   console.log(`[AI Process] Step 2: SEO generation (${totalRows} rows)`);
   await prisma.job.update({ where: { id: jobId }, data: { currentPass: 2 } });
 
@@ -247,6 +259,16 @@ export async function aiProcessProcessor(job: BullJob) {
   const allowedCatNames = allowedCategories.map((c) => c.name).join(", ");
 
   for (let i = 0; i < rows.length; i += maxWorkers) {
+    // Check cancellation
+    if (i > 0 && i % (maxWorkers * 5) === 0) {
+      const fresh = await prisma.job.findUnique({ where: { id: jobId }, select: { status: true } });
+      if (fresh?.status === "CANCELLED") {
+        console.log(`[AI Process] Job ${jobId} cancelled at step 2, row ${i}`);
+        cancelled = true;
+        break;
+      }
+    }
+
     const chunk = rows.slice(i, Math.min(i + maxWorkers, rows.length));
 
     await Promise.all(chunk.map(async (row, idx) => {
@@ -317,18 +339,20 @@ export async function aiProcessProcessor(job: BullJob) {
       speed: Math.round(speed * 10) / 10,
     });
   }
+  } // end if (!cancelled) for step 2
 
-  // Save final file (all columns)
+  // Save final file (all columns) — even if cancelled, save partial results
   const finalPath = dbJob.inputFileUrl.replace(/(\.\w+)$/, `_final$1`);
   fs.writeFileSync(finalPath, Papa.unparse(rows), "utf-8");
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-  console.log(`[AI Process] Job ${jobId} done in ${elapsed}s. Rows: ${totalRows}, Errors: ${errorLog.length}`);
+  const finalStatus = cancelled ? "CANCELLED" : "COMPLETED";
+  console.log(`[AI Process] Job ${jobId} ${finalStatus} in ${elapsed}s. Rows: ${totalRows}, Errors: ${errorLog.length}`);
 
   await prisma.job.update({
     where: { id: jobId },
     data: {
-      status: "COMPLETED",
+      status: finalStatus,
       outputFileUrl: finalPath,
       completedAt: new Date(),
       processedRows: totalRows,
@@ -336,5 +360,5 @@ export async function aiProcessProcessor(job: BullJob) {
     },
   });
 
-  await publishProgress(jobId, { status: "COMPLETED", processedRows: totalRows, totalRows });
+  await publishProgress(jobId, { status: finalStatus, processedRows: totalRows, totalRows });
 }
