@@ -175,6 +175,7 @@ export async function aiProcessProcessor(job: BullJob) {
   const config = dbJob.config as unknown as JobConfig;
   const apiKey = process.env.OPENROUTER_API_KEY!;
 
+  console.log(`[AI Process] Raw config:`, JSON.stringify(config));
   const visionModel = config.visionModel || config.model || "xiaomi/mimo-v2-omni";
   const textModel = config.textModel || "openai/gpt-4o-mini";
   const visionPrompt = config.visionPrompt || DEFAULT_VISION_PROMPT;
