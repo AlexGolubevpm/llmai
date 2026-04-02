@@ -17,26 +17,22 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-const DEFAULT_PROMPT = `Analyze this image and the provided context. Return a JSON object with these fields:
+const DEFAULT_PROMPT = `Look at this image carefully. Describe what you see.
 
-1. "tags": comma-separated list of up to 15 descriptive tags (actions, body types, positions, clothing, setting, hair color, ethnicity)
-2. "scene": 1-2 sentence description of what is happening in the scene
-3. "type": content type (hentai/anime/3D/real/CGI/cartoon), number of people, art style
-4. "title": SEO-optimized title, max 90 characters, English, engaging, search-optimized for 2026
-5. "description": SEO meta description, max 160 characters, complements the title
+Return ONLY a valid JSON object with these 3 fields:
+{
+  "tags": "comma-separated list of up to 15 descriptive tags",
+  "scene": "1-2 sentence description of what is happening",
+  "type": "content type: hentai, anime, 3D, real, CGI, or cartoon"
+}
 
-Context:
-Original title: {title}
-Existing tags: {existing_tags}
-Categories: {categories}
-
-Return ONLY valid JSON, no markdown, no explanation:
-{"tags":"...","scene":"...","type":"...","title":"...","description":"..."}`;
+For tags include: actions, body types, positions, clothing, setting, hair color.
+Do not include any markdown, explanation, or text outside the JSON.`;
 
 /**
- * Download image → base64 data URL.
+ * Download image from URL and convert to base64.
  */
-async function downloadImageBase64(url: string): Promise<string | null> {
+async function downloadImage(url: string): Promise<string | null> {
   if (!url) return null;
   try {
     const resp = await fetch(url, {
@@ -45,45 +41,36 @@ async function downloadImageBase64(url: string): Promise<string | null> {
       signal: AbortSignal.timeout(30000),
     });
     if (!resp.ok) {
-      console.warn(`[AI Process] Image download ${resp.status}: ${url}`);
+      console.warn(`[AI] Image ${resp.status}: ${url.slice(0, 80)}`);
       return null;
     }
-    const contentType = resp.headers.get("content-type") || "image/jpeg";
-    const buffer = await resp.arrayBuffer();
-    return `data:${contentType};base64,${Buffer.from(buffer).toString("base64")}`;
+    const ct = resp.headers.get("content-type") || "image/jpeg";
+    const buf = await resp.arrayBuffer();
+    return `data:${ct};base64,${Buffer.from(buf).toString("base64")}`;
   } catch (err) {
-    console.warn(`[AI Process] Image error: ${(err as Error).message}`);
+    console.warn(`[AI] Image error: ${(err as Error).message}`);
     return null;
   }
 }
 
 /**
- * Single vision+text call — one model, one prompt, one API call per row.
- * Returns all fields: tags, scene, type, title, description.
+ * Call OpenRouter vision API.
  */
-async function processWithVision(
+async function callVision(
   apiKey: string,
   model: string,
   prompt: string,
-  imageData: string | null,
-  temperature: number,
-  maxTokens: number
+  imageBase64: string | null,
+  maxTokens: number,
+  temperature: number
 ): Promise<string> {
   const BASE_URL = process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1";
 
-  const messages: Record<string, unknown>[] = [];
-
-  if (imageData) {
-    messages.push({
-      role: "user",
-      content: [
-        { type: "image_url", image_url: { url: imageData } },
-        { type: "text", text: prompt },
-      ],
-    });
-  } else {
-    messages.push({ role: "user", content: prompt });
+  const content: unknown[] = [];
+  if (imageBase64) {
+    content.push({ type: "image_url", image_url: { url: imageBase64 } });
   }
+  content.push({ type: "text", text: prompt });
 
   await sleep(MIN_DELAY_MS);
 
@@ -97,10 +84,9 @@ async function processWithVision(
     },
     body: JSON.stringify({
       model,
-      messages,
+      messages: [{ role: "user", content }],
       max_tokens: maxTokens,
       temperature,
-      // Route through non-Russian providers if needed
       provider: { allow_fallbacks: true },
     }),
   });
@@ -113,7 +99,7 @@ async function processWithVision(
 
   if (!resp.ok) {
     const text = await resp.text();
-    throw new Error(`OpenRouter ${resp.status}: ${text.slice(0, 300)}`);
+    throw new Error(`OpenRouter ${resp.status}: ${text.slice(0, 200)}`);
   }
 
   const data = await resp.json();
@@ -123,26 +109,21 @@ async function processWithVision(
 async function retry<T>(fn: () => Promise<T>, n: number, ctx: string): Promise<T> {
   let err: Error | null = null;
   for (let i = 0; i < n; i++) {
-    try {
-      return await fn();
-    } catch (e) {
+    try { return await fn(); } catch (e) {
       err = e as Error;
-      console.error(`[AI Process] ${ctx} attempt ${i + 1}/${n}: ${err.message}`);
+      console.error(`[AI] ${ctx} attempt ${i + 1}/${n}: ${err.message}`);
       if (i < n - 1) await sleep(Math.pow(2, i) * 1000);
     }
   }
   throw err!;
 }
 
-function parseJsonResponse(raw: string): Record<string, string> {
+function parseJson(raw: string): Record<string, string> {
   try {
-    const cleaned = raw.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
-    return JSON.parse(cleaned);
+    return JSON.parse(raw.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim());
   } catch {
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (match) {
-      try { return JSON.parse(match[0]); } catch { /* fall through */ }
-    }
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (m) { try { return JSON.parse(m[0]); } catch {} }
   }
   return {};
 }
@@ -153,15 +134,13 @@ export async function aiProcessProcessor(job: BullJob) {
   const config = dbJob.config as unknown as JobConfig;
   const apiKey = process.env.OPENROUTER_API_KEY!;
 
-  // Single model for everything
   const model = config.visionModel || config.model || "google/gemini-2.5-flash-preview-05-20";
   const prompt = config.visionPrompt || DEFAULT_PROMPT;
   const temperature = config.temperature || 0.7;
   const maxTokens = config.maxTokens || 500;
   const maxWorkers = Math.min(config.maxWorkers || 3, 10);
 
-  console.log(`[AI Process] Job ${jobId} | Model: ${model} | Workers: ${maxWorkers}`);
-  console.log(`[AI Process] Config:`, JSON.stringify(config));
+  console.log(`[AI] Job ${jobId} | Model: ${model} | Workers: ${maxWorkers} | MaxTokens: ${maxTokens}`);
 
   await prisma.job.update({
     where: { id: jobId },
@@ -173,13 +152,10 @@ export async function aiProcessProcessor(job: BullJob) {
   const rows = parsed.data as Record<string, string>[];
   const totalRows = rows.length;
 
-  const allowedTags = await prisma.allowedTag.findMany();
-  const allowedCategories = await prisma.allowedCategory.findMany();
-  const allowedTagNames = allowedTags.map((t) => t.name).join(", ");
-  const allowedCatNames = allowedCategories.map((c) => c.name).join(", ");
-  const stopWords: StopWordEntry[] = (
-    await prisma.stopWord.findMany({ where: { isActive: true } })
-  ).map((w) => ({ word: w.word, replacement: w.replacement }));
+  const stopWords: StopWordEntry[] = config.applyStopWords
+    ? (await prisma.stopWord.findMany({ where: { isActive: true } }))
+        .map((w) => ({ word: w.word, replacement: w.replacement }))
+    : [];
 
   await prisma.job.update({
     where: { id: jobId },
@@ -189,13 +165,12 @@ export async function aiProcessProcessor(job: BullJob) {
   const errorLog: { row: number; step: string; error: string; retries: number }[] = [];
   const startTime = Date.now();
 
-  // Process all rows — ONE API call per row
   for (let i = 0; i < rows.length; i += maxWorkers) {
     // Check cancellation
     if (i > 0 && i % (maxWorkers * 5) === 0) {
       const fresh = await prisma.job.findUnique({ where: { id: jobId }, select: { status: true } });
       if (fresh?.status === "CANCELLED") {
-        console.log(`[AI Process] Job ${jobId} cancelled at row ${i}`);
+        console.log(`[AI] Job ${jobId} cancelled at row ${i}`);
         break;
       }
     }
@@ -205,49 +180,44 @@ export async function aiProcessProcessor(job: BullJob) {
     await Promise.all(chunk.map(async (row, idx) => {
       const globalIdx = i + idx;
       const thumbUrl = row["thumbnail_url"] || row["thumb_url"] || "";
-      const title = row["title"] || "";
-      row["original_title"] = title;
+      row["original_title"] = row["title"] || "";
 
-      // Download image
-      const imageData = await downloadImageBase64(thumbUrl);
+      // Download image on our server
+      const img = await downloadImage(thumbUrl);
 
-      // Build prompt with context
-      const finalPrompt = prompt
-        .replace("{title}", title)
-        .replace("{existing_tags}", row["tags"] || "")
-        .replace("{categories}", row["categories"] || "")
-        + (allowedTagNames ? `\nAllowed tags: [${allowedTagNames}]` : "")
-        + (allowedCatNames ? `\nAllowed categories: [${allowedCatNames}]` : "");
+      if (!img) {
+        row["ai_tags"] = "";
+        row["scene_description"] = "";
+        row["content_type"] = "";
+        errorLog.push({ row: globalIdx, step: "download", error: `Failed to download: ${thumbUrl.slice(0, 80)}`, retries: 0 });
+        return;
+      }
 
       try {
         const raw = await retry(
-          () => processWithVision(apiKey, model, finalPrompt, imageData, temperature, maxTokens),
+          () => callVision(apiKey, model, prompt, img, maxTokens, temperature),
           MAX_RETRIES, `row${globalIdx}`
         );
 
-        const result = parseJsonResponse(postprocessLLMResponse(raw));
+        const result = parseJson(postprocessLLMResponse(raw));
 
-        row["ai_tags"] = (result.tags || "").slice(0, 500);
-        row["scene_description"] = (result.scene || "").slice(0, 500);
-        row["content_type"] = (result.type || "").slice(0, 200);
-
-        let seoTitle = postprocessLLMResponse(result.title || title);
-        let seoDesc = postprocessLLMResponse(result.description || "");
+        let tags = result.tags || "";
+        let scene = result.scene || "";
+        let type = result.type || "";
 
         if (stopWords.length > 0) {
-          seoTitle = cleanText(seoTitle, stopWords);
-          seoDesc = cleanText(seoDesc, stopWords);
+          tags = cleanText(tags, stopWords);
+          scene = cleanText(scene, stopWords);
         }
 
-        row["seo_title"] = seoTitle.slice(0, 90);
-        row["seo_description"] = seoDesc.slice(0, 160);
+        row["ai_tags"] = tags.slice(0, 500);
+        row["scene_description"] = scene.slice(0, 500);
+        row["content_type"] = type.slice(0, 200);
       } catch (err) {
         row["ai_tags"] = "";
         row["scene_description"] = "";
         row["content_type"] = "";
-        row["seo_title"] = title;
-        row["seo_description"] = "";
-        errorLog.push({ row: globalIdx, step: "process", error: (err as Error).message, retries: MAX_RETRIES });
+        errorLog.push({ row: globalIdx, step: "vision", error: (err as Error).message, retries: MAX_RETRIES });
       }
     }));
 
@@ -276,7 +246,7 @@ export async function aiProcessProcessor(job: BullJob) {
   fs.writeFileSync(outputPath, Papa.unparse(rows), "utf-8");
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-  console.log(`[AI Process] Job ${jobId} done in ${elapsed}s. Rows: ${totalRows}, Errors: ${errorLog.length}`);
+  console.log(`[AI] Job ${jobId} done in ${elapsed}s. ${totalRows} rows, ${errorLog.length} errors`);
 
   await prisma.job.update({
     where: { id: jobId },
