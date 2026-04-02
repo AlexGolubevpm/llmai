@@ -119,12 +119,30 @@ async function retry<T>(fn: () => Promise<T>, n: number, ctx: string): Promise<T
 }
 
 function parseJson(raw: string): Record<string, string> {
-  try {
-    return JSON.parse(raw.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim());
-  } catch {
-    const m = raw.match(/\{[\s\S]*\}/);
-    if (m) { try { return JSON.parse(m[0]); } catch {} }
+  // Clean up the response
+  let cleaned = raw
+    .replace(/```json\s*/gi, "")
+    .replace(/```\s*/g, "")
+    .replace(/^\s*json\s*/i, "")
+    .trim();
+
+  // Try direct parse
+  try { return JSON.parse(cleaned); } catch {}
+
+  // Try extracting JSON from the response
+  const match = cleaned.match(/\{[\s\S]*\}/);
+  if (match) {
+    try { return JSON.parse(match[0]); } catch {}
+
+    // Try fixing common JSON issues (trailing commas, single quotes)
+    let fixed = match[0]
+      .replace(/,\s*}/g, "}")
+      .replace(/,\s*]/g, "]")
+      .replace(/'/g, '"');
+    try { return JSON.parse(fixed); } catch {}
   }
+
+  console.warn(`[AI] Failed to parse JSON from response: ${raw.slice(0, 200)}`);
   return {};
 }
 
@@ -199,11 +217,16 @@ export async function aiProcessProcessor(job: BullJob) {
           MAX_RETRIES, `row${globalIdx}`
         );
 
-        const result = parseJson(postprocessLLMResponse(raw));
+        // Log first row's raw response for debugging
+        if (globalIdx === 0) {
+          console.log(`[AI] Row 0 raw response (first 500 chars): ${raw.slice(0, 500)}`);
+        }
+
+        const result = parseJson(raw);
 
         let tags = result.tags || "";
-        let scene = result.scene || "";
-        let type = result.type || "";
+        let scene = result.scene || result.scene_description || "";
+        let type = result.type || result.content_type || "";
 
         if (stopWords.length > 0) {
           tags = cleanText(tags, stopWords);
