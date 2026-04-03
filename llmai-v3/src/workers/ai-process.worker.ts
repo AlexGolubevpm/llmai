@@ -17,17 +17,32 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-const DEFAULT_PROMPT = `Look at this image carefully. Describe what you see.
+const DEFAULT_PROMPT = `Analyze this adult content thumbnail image carefully.
 
-Return ONLY a valid JSON object with these 3 fields:
-{
-  "tags": "comma-separated list of up to 15 descriptive tags",
-  "scene": "1-2 sentence description of what is happening",
-  "type": "content type: hentai, anime, 3D, real, CGI, or cartoon"
-}
+You must return a valid JSON with exactly these 5 fields:
 
-For tags include: actions, body types, positions, clothing, setting, hair color.
-Do not include any markdown, explanation, or text outside the JSON.`;
+1. "tags" — comma-separated list of 10-15 specific tags describing: sexual acts, positions, body types (ass, tits, etc), physical attributes (blonde, brunette, BBW, petite, MILF, teen 18+), clothing/accessories, setting/location, number of participants. Use lowercase, hyphenated multi-word tags (e.g. "big-tits", "anal-sex", "step-mom").
+
+2. "scene" — one vivid sentence (20-40 words) describing the action in the image. Be explicit and specific. This is used as alt-text for SEO.
+
+3. "type" — content format, one of: real, hentai, anime, 3D-render, CGI, cartoon, POV, VR, cosplay, amateur, professional
+
+4. "title" — SEO-optimized title for an adult tube site, 60-80 characters. Rules:
+   - Start with a power word or action verb
+   - Include 2-3 high-search-volume keywords naturally
+   - Use specific niches, not generic terms
+   - No clickbait ALL CAPS, no emojis, no special characters
+   - Must read naturally in English
+   - Original title for context: {title}
+
+5. "description" — SEO meta description, 120-155 characters. Rules:
+   - Complement the title, don't repeat it
+   - Include secondary keywords and long-tail phrases
+   - Write as a compelling preview that drives clicks
+   - Natural English, no keyword stuffing
+
+Return ONLY the JSON, no markdown code blocks, no explanation:
+{"tags":"...", "scene":"...", "type":"...", "title":"...", "description":"..."}`;
 
 /**
  * Download image from URL and convert to base64.
@@ -207,13 +222,18 @@ export async function aiProcessProcessor(job: BullJob) {
         row["ai_tags"] = "";
         row["scene_description"] = "";
         row["content_type"] = "";
+        row["seo_title"] = row["original_title"];
+        row["seo_description"] = "";
         errorLog.push({ row: globalIdx, step: "download", error: `Failed to download: ${thumbUrl.slice(0, 80)}`, retries: 0 });
         return;
       }
 
+      // Inject original title into prompt for context
+      const rowPrompt = prompt.replace("{title}", row["original_title"] || "");
+
       try {
         const raw = await retry(
-          () => callVision(apiKey, model, prompt, img, maxTokens, temperature),
+          () => callVision(apiKey, model, rowPrompt, img, maxTokens, temperature),
           MAX_RETRIES, `row${globalIdx}`
         );
 
@@ -227,19 +247,27 @@ export async function aiProcessProcessor(job: BullJob) {
         let tags = result.tags || "";
         let scene = result.scene || result.scene_description || "";
         let type = result.type || result.content_type || "";
+        let seoTitle = result.title || row["original_title"] || "";
+        let seoDesc = result.description || "";
 
         if (stopWords.length > 0) {
           tags = cleanText(tags, stopWords);
           scene = cleanText(scene, stopWords);
+          seoTitle = cleanText(seoTitle, stopWords);
+          seoDesc = cleanText(seoDesc, stopWords);
         }
 
         row["ai_tags"] = tags.slice(0, 500);
         row["scene_description"] = scene.slice(0, 500);
         row["content_type"] = type.slice(0, 200);
+        row["seo_title"] = seoTitle.slice(0, 90);
+        row["seo_description"] = seoDesc.slice(0, 160);
       } catch (err) {
         row["ai_tags"] = "";
         row["scene_description"] = "";
         row["content_type"] = "";
+        row["seo_title"] = row["original_title"];
+        row["seo_description"] = "";
         errorLog.push({ row: globalIdx, step: "vision", error: (err as Error).message, retries: MAX_RETRIES });
       }
     }));
