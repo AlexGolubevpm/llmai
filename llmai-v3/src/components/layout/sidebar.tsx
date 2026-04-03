@@ -15,6 +15,7 @@ import {
   Tags,
   Settings,
   Package,
+  Link2,
   ChevronLeft,
   ChevronRight,
   Menu,
@@ -32,7 +33,8 @@ const navGroups = [
       { href: "/rewrite", label: "Рерайт", icon: PenLine },
       { href: "/translate", label: "Перевод", icon: Globe },
       { href: "/postprocess", label: "Постобработка", icon: Sparkles },
-      { href: "/ai-process", label: "AI Process 3.0", icon: Bot },
+      { href: "/ai-process", label: "AI Process", icon: Bot },
+      { href: "/pbn", label: "PBN тексты", icon: Link2 },
     ],
   },
   {
