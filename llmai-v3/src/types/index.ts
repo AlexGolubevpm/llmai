@@ -21,11 +21,15 @@ export interface JobConfig {
   targetLanguage?: string;
   harmfulPatterns?: string[];
   applyStopWords?: boolean;
-  // AI Process v3 — 2-step pipeline
+  // AI Process
   visionModel?: string;
   textModel?: string;
   visionPrompt?: string;
   seoPrompt?: string;
+  // Bundle
+  bundleName?: string;
+  bundleTags?: string;
+  bundleCategories?: string;
 }
 
 export interface Job {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -15,6 +15,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { Play, FileText, Type } from "lucide-react";
 import { toast } from "sonner";
 import { pageVariants } from "@/lib/animations";
+import { cn } from "@/lib/utils";
 
 const DEFAULT_PROMPT = `Analyze this adult content thumbnail image carefully.
 
@@ -44,6 +45,12 @@ Return ONLY the JSON, no markdown code blocks, no explanation:
 {"tags":"...", "scene":"...", "type":"...", "title":"...", "description":"..."}`;
 
 export default function AIProcessPage() {
+  // Bundles
+  const [bundles, setBundles] = useState<{ id: string; name: string; tags: string; categories: string; prompt: string | null; isDefault: boolean }[]>([]);
+  const [selectedBundle, setSelectedBundle] = useState<string>("");
+  const [bundleTags, setBundleTags] = useState("");
+  const [bundleCategories, setBundleCategories] = useState("");
+
   const [fileUrl, setFileUrl] = useState("");
   const [lineCount, setLineCount] = useState(0);
   const [inputMode, setInputMode] = useState<"file" | "text">("file");
@@ -58,6 +65,27 @@ export default function AIProcessPage() {
 
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // Load bundles on mount
+  useEffect(() => {
+    fetch("/api/bundles")
+      .then((r) => r.json())
+      .then((data) => {
+        const list = data.bundles || [];
+        setBundles(list);
+        // Auto-select default bundle
+        const def = list.find((b: any) => b.isDefault);
+        if (def) applyBundle(def);
+      })
+      .catch(() => {});
+  }, []);
+
+  function applyBundle(b: { name: string; tags: string; categories: string; prompt: string | null }) {
+    setSelectedBundle(b.name);
+    setBundleTags(b.tags);
+    setBundleCategories(b.categories);
+    if (b.prompt) setPrompt(b.prompt);
+  }
 
   async function startJob() {
     if (inputMode === "text" && !textThumb.trim()) { toast.error("Введите URL тумбы"); return; }
@@ -90,6 +118,9 @@ export default function AIProcessPage() {
             maxTokens,
             maxWorkers,
             applyStopWords: true,
+            bundleName: selectedBundle || undefined,
+            bundleTags: bundleTags || undefined,
+            bundleCategories: bundleCategories || undefined,
           },
         }),
       });
@@ -107,6 +138,38 @@ export default function AIProcessPage() {
         title="AI Process"
         description="Модель анализирует тумбу → теги, описание, тип контента, SEO title + description"
       />
+
+      {/* Bundle selector */}
+      {bundles.length > 0 && (
+        <div className="rounded-xl border bg-[var(--surface)] p-5">
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-sm font-medium text-[var(--text-secondary)]">Бандл:</span>
+            {bundles.map((b) => (
+              <button
+                key={b.id}
+                onClick={() => applyBundle(b)}
+                className={cn(
+                  "rounded-lg border px-3 py-1.5 text-xs font-medium transition-all",
+                  selectedBundle === b.name
+                    ? "border-[var(--accent-blue)] bg-[var(--accent-blue-light)] text-[var(--accent-blue)]"
+                    : "border-[var(--border)] hover:border-[var(--border-hover)] text-[var(--text-secondary)]"
+                )}
+              >
+                {b.name}
+                <span className="ml-1 text-[var(--text-muted)]">
+                  ({b.tags.split(",").filter(Boolean).length} тегов)
+                </span>
+              </button>
+            ))}
+          </div>
+          {selectedBundle && bundleTags && (
+            <div className="mt-3 text-xs text-[var(--text-muted)]">
+              <span className="font-medium">Теги:</span> {bundleTags.split(",").slice(0, 10).map((t) => t.trim()).join(", ")}
+              {bundleTags.split(",").length > 10 && ` и ещё ${bundleTags.split(",").length - 10}...`}
+            </div>
+          )}
+        </div>
+      )}
 
       {activeJobId && <JobProgress jobId={activeJobId} onComplete={() => toast.success("AI Process завершён!")} />}
 
