@@ -168,12 +168,24 @@ export async function aiProcessProcessor(job: BullJob) {
   const apiKey = process.env.OPENROUTER_API_KEY!;
 
   const model = config.visionModel || config.model || "google/gemini-2.5-flash-preview-05-20";
-  const prompt = config.visionPrompt || DEFAULT_PROMPT;
+  let prompt = config.visionPrompt || DEFAULT_PROMPT;
   const temperature = config.temperature || 0.7;
   const maxTokens = config.maxTokens || 500;
   const maxWorkers = Math.min(config.maxWorkers || 3, 10);
 
-  console.log(`[AI] Job ${jobId} | Model: ${model} | Workers: ${maxWorkers} | MaxTokens: ${maxTokens}`);
+  // Inject bundle tags/categories into prompt
+  const bundleTags = (config as any).bundleTags || "";
+  const bundleCategories = (config as any).bundleCategories || "";
+  const bundleName = (config as any).bundleName || "";
+
+  if (bundleTags || bundleCategories) {
+    prompt += `\n\nIMPORTANT — Use ONLY these allowed tags and categories for this niche (${bundleName}):`;
+    if (bundleTags) prompt += `\nAllowed tags: [${bundleTags}]`;
+    if (bundleCategories) prompt += `\nAllowed categories: [${bundleCategories}]`;
+    prompt += `\nSelect tags and categories ONLY from the lists above. Do not invent new ones.`;
+  }
+
+  console.log(`[AI] Job ${jobId} | Model: ${model} | Bundle: ${bundleName || "none"} | Workers: ${maxWorkers}`);
 
   await prisma.job.update({
     where: { id: jobId },

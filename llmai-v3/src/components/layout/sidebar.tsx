@@ -14,6 +14,7 @@ import {
   Ban,
   Tags,
   Settings,
+  Package,
   ChevronLeft,
   ChevronRight,
   Menu,
@@ -37,6 +38,7 @@ const navGroups = [
   {
     label: "Управление",
     items: [
+      { href: "/bundles", label: "Бандлы", icon: Package },
       { href: "/stopwords", label: "Стоп-слова", icon: Ban },
       { href: "/tags", label: "Теги & Категории", icon: Tags },
       { href: "/settings", label: "Настройки", icon: Settings },
