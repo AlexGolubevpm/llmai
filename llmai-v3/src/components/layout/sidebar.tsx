@@ -35,7 +35,7 @@ const navGroups = [
       { href: "/postprocess", label: "Постобработка", icon: Sparkles },
       { href: "/ai-process", label: "AI Process", icon: Bot },
       { href: "/pbn", label: "PBN тексты", icon: Link2 },
-      { href: "/seo-generator", label: "SEO генератор", icon: PenLine },
+      { href: "/seo-generator", label: "SEO Categories", icon: PenLine },
     ],
   },
   {
