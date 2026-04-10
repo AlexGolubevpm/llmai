@@ -12,6 +12,8 @@ enum JobType {
   TRANSLATE
   POSTPROCESS
   AI_PROCESS
+  SEO_CATEGORIES
+  PBN
 }
 
 enum JobStatus {

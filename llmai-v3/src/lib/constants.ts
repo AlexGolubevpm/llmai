@@ -44,6 +44,8 @@ export const JOB_TYPE_CONFIG: Record<
   TRANSLATE: { label: "Перевод", icon: "Globe" },
   POSTPROCESS: { label: "Очистка", icon: "Sparkles" },
   AI_PROCESS: { label: "AI Process", icon: "Bot" },
+  SEO_CATEGORIES: { label: "SEO Categories", icon: "PenLine" },
+  PBN: { label: "PBN тексты", icon: "Link2" },
 };
 
 export function formatRelativeTime(date: string | Date): string {

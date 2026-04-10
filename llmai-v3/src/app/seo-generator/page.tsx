@@ -7,13 +7,12 @@ import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ModelSelector } from "@/components/model-selector";
+import { JobProgress } from "@/components/job-progress";
 import { PageHeader } from "@/components/layout/page-header";
-import { Play, Download } from "lucide-react";
+import { Play } from "lucide-react";
 import { toast } from "sonner";
-import { pageVariants, staggerItem } from "@/lib/animations";
-import Papa from "papaparse";
+import { pageVariants } from "@/lib/animations";
 
 const DEFAULT_PROMPT = `You are an SEO expert for adult tube sites. Generate a unique SEO title and meta description for a specific tag/category page.
 
@@ -24,7 +23,6 @@ This is a page that lists all videos tagged with "{name}" on an adult tube site.
 Requirements for title:
 - 50-65 characters
 - MUST include the exact tag/category name "{name}"
-- Format examples: "Best {name} Porn Videos - Free HD Sex Tubes", "{name} - Watch Free XXX Videos Online"
 - Include power words: Free, HD, Best, Watch, Hot
 - Must be unique and specific to this tag
 
@@ -33,16 +31,9 @@ Requirements for description:
 - MUST mention "{name}" at least once
 - Describe what visitors will find on this specific tag page
 - Include call-to-action: watch, explore, browse, discover
-- Include secondary keywords related to "{name}"
 
 Return ONLY valid JSON:
 {"title":"...","description":"..."}`;
-
-interface ResultRow {
-  name: string;
-  seo_title: string;
-  seo_description: string;
-}
 
 export default function SEOCategoriesPage() {
   const [namesText, setNamesText] = useState("");
@@ -51,133 +42,75 @@ export default function SEOCategoriesPage() {
   const [temperature, setTemperature] = useState(0.7);
   const [maxTokens, setMaxTokens] = useState(300);
   const [applyStopWords, setApplyStopWords] = useState(true);
-
-  const [results, setResults] = useState<ResultRow[]>([]);
-  const [generating, setGenerating] = useState(false);
-  const [progress, setProgress] = useState(0);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   const names = namesText.split("\n").map((l) => l.trim()).filter(Boolean);
 
-  async function generate() {
+  async function startJob() {
     if (names.length === 0) {
-      toast.error("Введите теги или категории (по одному на строку)");
+      toast.error("Введите теги или категории");
       return;
     }
-
-    setGenerating(true);
-    setResults([]);
-    setProgress(0);
-
-    const allResults: ResultRow[] = [];
-
+    setSubmitting(true);
     try {
-      for (let i = 0; i < names.length; i++) {
-        const name = names[i];
-        const rowPrompt = prompt.replace(/\{name\}/g, name);
+      // Create a placeholder input file
+      const resp = await fetch("/api/files/from-text", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: namesText, mode: "rewrite" }),
+      });
+      const fileData = await resp.json();
+      if (!resp.ok) throw new Error(fileData.error);
 
-        const resp = await fetch("/api/pbn/generate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+      const jobResp = await fetch("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "SEO_CATEGORIES",
+          inputFileUrl: fileData.fileUrl,
+          config: {
             model,
-            prompt: rowPrompt,
+            customPrompt: prompt,
             temperature,
             maxTokens,
-          }),
-        });
-
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data.error);
-
-        const rawText = data.text || "";
-        console.log(`[SEO Cat] "${name}" raw:`, rawText.slice(0, 300));
-
-        // Parse JSON response — try multiple approaches
-        let parsed: Record<string, string> = {};
-        const cleanedText = rawText
-          .replace(/```json\s*/gi, "")
-          .replace(/```\s*/g, "")
-          .replace(/^\s*json\s*/i, "")
-          .trim();
-
-        try {
-          parsed = JSON.parse(cleanedText);
-        } catch {
-          const match = cleanedText.match(/\{[\s\S]*\}/);
-          if (match) {
-            try {
-              parsed = JSON.parse(match[0]);
-            } catch {
-              // Try fixing common issues
-              const fixed = match[0].replace(/,\s*}/g, "}").replace(/'/g, '"');
-              try { parsed = JSON.parse(fixed); } catch {}
-            }
-          }
-        }
-
-        const seoTitle = (parsed.title || parsed.seo_title || "").slice(0, 90);
-        const seoDesc = (parsed.description || parsed.seo_description || "").slice(0, 160);
-
-        if (!seoTitle && !seoDesc) {
-          console.warn(`[SEO Cat] Failed to parse for "${name}":`, rawText.slice(0, 200));
-        }
-
-        allResults.push({ name, seo_title: seoTitle, seo_description: seoDesc });
-
-        setResults([...allResults]);
-        setProgress(Math.round(((i + 1) / names.length) * 100));
-      }
-
-      toast.success(`Сгенерировано ${allResults.length} SEO текстов`);
+            applyStopWords,
+            names,
+          },
+        }),
+      });
+      const jobData = await jobResp.json();
+      if (!jobResp.ok) throw new Error(jobData.error);
+      setActiveJobId(jobData.job.id);
+      toast.success("SEO Categories запущен — результат на Dashboard");
     } catch (err) {
       toast.error((err as Error).message);
     } finally {
-      setGenerating(false);
+      setSubmitting(false);
     }
-  }
-
-  function downloadCSV() {
-    const csv = Papa.unparse(results.map((r) => ({
-      tag_category: r.name,
-      seo_title: r.seo_title,
-      seo_description: r.seo_description,
-    })));
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `seo-categories-${results.length}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
   }
 
   return (
     <motion.div {...pageVariants} className="space-y-8">
       <PageHeader
         title="SEO Categories Generator"
-        description="Введите теги и категории — AI напишет SEO title и description для каждой страницы тега/категории"
+        description="Введите теги/категории → AI генерирует SEO title + description для каждого. Результат на Dashboard."
       />
 
+      {activeJobId && <JobProgress jobId={activeJobId} onComplete={() => toast.success("SEO Categories готов! Скачайте на Dashboard.")} />}
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Left: Input + Settings */}
         <div className="space-y-6">
           <div className="rounded-xl border bg-[var(--surface)] p-6 space-y-5">
             <h2 className="text-[15px] font-medium">Теги и категории</h2>
-            <div>
-              <Label className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">
-                Список (по одному на строку)
-              </Label>
-              <Textarea
-                value={namesText}
-                onChange={(e) => setNamesText(e.target.value)}
-                rows={12}
-                placeholder={"Anal\nBlowjob\nHentai\nMILF\nTeen 18+\nTransgender\nAsian\nAmateur\nPOV\nCreampie"}
-                className="mt-1.5 font-mono text-sm"
-              />
-              <p className="text-xs text-[var(--text-muted)] mt-1.5">
-                {names.length} тегов/категорий
-              </p>
-            </div>
+            <Textarea
+              value={namesText}
+              onChange={(e) => setNamesText(e.target.value)}
+              rows={12}
+              placeholder={"Anal\nBlowjob\nHentai\nMILF\nTeen 18+\nTransgender\nAsian\nAmateur\nPOV\nCreampie"}
+              className="font-mono text-sm"
+            />
+            <p className="text-xs text-[var(--text-muted)]">{names.length} тегов/категорий</p>
           </div>
 
           <div className="rounded-xl border bg-[var(--surface)] p-6 space-y-5">
@@ -206,87 +139,23 @@ export default function SEOCategoriesPage() {
           </div>
         </div>
 
-        {/* Right: Prompt */}
         <div className="rounded-xl border bg-[var(--surface)] p-6 space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-[15px] font-medium">Промпт</h2>
-            <button onClick={() => setPrompt(DEFAULT_PROMPT)} className="text-xs text-[var(--accent-blue)] hover:underline">
-              Сбросить
-            </button>
+            <button onClick={() => setPrompt(DEFAULT_PROMPT)} className="text-xs text-[var(--accent-blue)] hover:underline">Сбросить</button>
           </div>
-          <Textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            rows={22}
-            className="font-mono text-xs"
-          />
-          <div className="rounded-lg bg-[var(--surface-raised)] px-4 py-3 text-xs text-[var(--text-muted)] space-y-1">
-            <p><strong>Переменная:</strong> <code>{"{name}"}</code> — подставляется название тега/категории</p>
-            <p><strong>JSON:</strong> <code>{`{"title":"...","description":"..."}`}</code></p>
+          <Textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={22} className="font-mono text-xs" />
+          <div className="rounded-lg bg-[var(--surface-raised)] px-4 py-3 text-xs text-[var(--text-muted)]">
+            <p><strong>Переменная:</strong> <code>{"{name}"}</code> — название тега/категории</p>
+            <p><strong>CSV выход:</strong> tag_category, seo_title, seo_description</p>
           </div>
         </div>
       </div>
 
-      {/* Progress */}
-      {generating && (
-        <div className="rounded-xl border bg-[var(--surface)] p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-medium">Генерация...</span>
-            <span className="text-2xl font-semibold font-mono">{progress}%</span>
-          </div>
-          <div className="h-2 rounded-full bg-[var(--surface-raised)] overflow-hidden">
-            <div className="h-full bg-[var(--accent-blue)] transition-all duration-300 rounded-full" style={{ width: `${progress}%` }} />
-          </div>
-          <span className="text-xs text-[var(--text-muted)]">{results.length} / {names.length}</span>
-        </div>
-      )}
-
-      {/* Actions */}
-      <div className="flex gap-3">
-        <Button
-          size="lg"
-          onClick={generate}
-          disabled={generating || names.length === 0}
-          className="flex-1 h-12 text-sm font-medium gap-2"
-        >
-          <Play className="h-4 w-4" />
-          {generating ? `${results.length}/${names.length}...` : `Сгенерировать SEO для ${names.length} тегов`}
-        </Button>
-        {results.length > 0 && (
-          <Button variant="outline" size="lg" onClick={downloadCSV} className="h-12 gap-2">
-            <Download className="h-4 w-4" /> CSV
-          </Button>
-        )}
-      </div>
-
-      {/* Results table */}
-      {results.length > 0 && (
-        <div className="rounded-xl border bg-[var(--surface)] overflow-hidden">
-          <div className="border-b px-6 py-4">
-            <h2 className="text-[15px] font-medium">Результаты ({results.length})</h2>
-          </div>
-          <div className="max-h-[600px] overflow-auto">
-            <Table>
-              <TableHeader>
-                <TableRow className="hover:bg-transparent">
-                  <TableHead className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)] w-[120px]">Тег / Категория</TableHead>
-                  <TableHead className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">SEO Title</TableHead>
-                  <TableHead className="text-xs font-medium uppercase tracking-wider text-[var(--text-muted)]">SEO Description</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {results.map((r, i) => (
-                  <motion.tr key={i} variants={staggerItem} initial="initial" animate="animate" transition={{ delay: i * 0.02 }} className="border-b last:border-0 hover:bg-[var(--surface-raised)]">
-                    <TableCell className="font-mono text-xs font-medium">{r.name}</TableCell>
-                    <TableCell className="text-xs text-[var(--accent-blue)]">{r.seo_title}</TableCell>
-                    <TableCell className="text-xs text-[var(--text-muted)]">{r.seo_description}</TableCell>
-                  </motion.tr>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        </div>
-      )}
+      <Button size="lg" onClick={startJob} disabled={submitting || names.length === 0} className="w-full h-12 text-sm font-medium gap-2">
+        <Play className="h-4 w-4" />
+        {submitting ? "Создание задачи..." : `Сгенерировать SEO для ${names.length} тегов`}
+      </Button>
     </motion.div>
   );
 }

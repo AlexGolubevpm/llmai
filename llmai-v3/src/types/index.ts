@@ -1,4 +1,4 @@
-export type JobType = "REWRITE" | "TRANSLATE" | "POSTPROCESS" | "AI_PROCESS";
+export type JobType = "REWRITE" | "TRANSLATE" | "POSTPROCESS" | "AI_PROCESS" | "SEO_CATEGORIES" | "PBN";
 export type JobStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
 
 export interface JobConfig {
