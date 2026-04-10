@@ -89,23 +89,40 @@ export default function SEOCategoriesPage() {
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.error);
 
-        // Parse JSON response
+        const rawText = data.text || "";
+        console.log(`[SEO Cat] "${name}" raw:`, rawText.slice(0, 300));
+
+        // Parse JSON response — try multiple approaches
         let parsed: Record<string, string> = {};
+        const cleanedText = rawText
+          .replace(/```json\s*/gi, "")
+          .replace(/```\s*/g, "")
+          .replace(/^\s*json\s*/i, "")
+          .trim();
+
         try {
-          const cleaned = data.text.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
-          parsed = JSON.parse(cleaned);
+          parsed = JSON.parse(cleanedText);
         } catch {
-          const match = data.text.match(/\{[\s\S]*\}/);
+          const match = cleanedText.match(/\{[\s\S]*\}/);
           if (match) {
-            try { parsed = JSON.parse(match[0]); } catch {}
+            try {
+              parsed = JSON.parse(match[0]);
+            } catch {
+              // Try fixing common issues
+              const fixed = match[0].replace(/,\s*}/g, "}").replace(/'/g, '"');
+              try { parsed = JSON.parse(fixed); } catch {}
+            }
           }
         }
 
-        allResults.push({
-          name,
-          seo_title: (parsed.title || parsed.seo_title || "").slice(0, 90),
-          seo_description: (parsed.description || parsed.seo_description || "").slice(0, 160),
-        });
+        const seoTitle = (parsed.title || parsed.seo_title || "").slice(0, 90);
+        const seoDesc = (parsed.description || parsed.seo_description || "").slice(0, 160);
+
+        if (!seoTitle && !seoDesc) {
+          console.warn(`[SEO Cat] Failed to parse for "${name}":`, rawText.slice(0, 200));
+        }
+
+        allResults.push({ name, seo_title: seoTitle, seo_description: seoDesc });
 
         setResults([...allResults]);
         setProgress(Math.round(((i + 1) / names.length) * 100));
