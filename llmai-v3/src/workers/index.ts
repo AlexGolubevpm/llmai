@@ -1,10 +1,11 @@
-import { createWorker, REWRITE_QUEUE, TRANSLATE_QUEUE, POSTPROCESS_QUEUE, AI_PROCESS_QUEUE, SEO_CATEGORIES_QUEUE, PBN_QUEUE } from "@/lib/queue";
+import { createWorker, REWRITE_QUEUE, TRANSLATE_QUEUE, POSTPROCESS_QUEUE, AI_PROCESS_QUEUE, SEO_CATEGORIES_QUEUE, PBN_QUEUE, CATEGORIZE_QUEUE } from "@/lib/queue";
 import { rewriteProcessor } from "./rewrite.worker";
 import { translateProcessor } from "./translate.worker";
 import { postprocessProcessor } from "./postprocess.worker";
 import { aiProcessProcessor } from "./ai-process.worker";
 import { seoCategoriesProcessor } from "./seo-categories.worker";
 import { pbnProcessor } from "./pbn.worker";
+import { categorizeProcessor } from "./categorize.worker";
 
 console.log("Starting workers...");
 
@@ -14,8 +15,9 @@ const postprocessWorker = createWorker(POSTPROCESS_QUEUE, postprocessProcessor);
 const aiProcessWorker = createWorker(AI_PROCESS_QUEUE, aiProcessProcessor);
 const seoCategoriesWorker = createWorker(SEO_CATEGORIES_QUEUE, seoCategoriesProcessor);
 const pbnWorker = createWorker(PBN_QUEUE, pbnProcessor);
+const categorizeWorker = createWorker(CATEGORIZE_QUEUE, categorizeProcessor);
 
-const workers = [rewriteWorker, translateWorker, postprocessWorker, aiProcessWorker, seoCategoriesWorker, pbnWorker];
+const workers = [rewriteWorker, translateWorker, postprocessWorker, aiProcessWorker, seoCategoriesWorker, pbnWorker, categorizeWorker];
 
 for (const worker of workers) {
   worker.on("completed", (job) => {

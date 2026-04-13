@@ -15,6 +15,7 @@ export const POSTPROCESS_QUEUE = "postprocess";
 export const AI_PROCESS_QUEUE = "ai-process";
 export const SEO_CATEGORIES_QUEUE = "seo-categories";
 export const PBN_QUEUE = "pbn";
+export const CATEGORIZE_QUEUE = "categorize";
 
 // Create queues
 export const rewriteQueue = new Queue(REWRITE_QUEUE, { connection });
@@ -23,6 +24,7 @@ export const postprocessQueue = new Queue(POSTPROCESS_QUEUE, { connection });
 export const aiProcessQueue = new Queue(AI_PROCESS_QUEUE, { connection });
 export const seoCategoriesQueue = new Queue(SEO_CATEGORIES_QUEUE, { connection });
 export const pbnQueue = new Queue(PBN_QUEUE, { connection });
+export const categorizeQueue = new Queue(CATEGORIZE_QUEUE, { connection });
 
 // Helper to create workers
 export function createWorker(
@@ -63,6 +65,8 @@ export function getQueueByType(type: string) {
       return seoCategoriesQueue;
     case "PBN":
       return pbnQueue;
+    case "CATEGORIZE":
+      return categorizeQueue;
     default:
       throw new Error(`Unknown job type: ${type}`);
   }
