@@ -46,6 +46,7 @@ export const JOB_TYPE_CONFIG: Record<
   AI_PROCESS: { label: "AI Process", icon: "Bot" },
   SEO_CATEGORIES: { label: "SEO Categories", icon: "PenLine" },
   PBN: { label: "PBN тексты", icon: "Link2" },
+  CATEGORIZE: { label: "Категоризация", icon: "Tags" },
 };
 
 export function formatRelativeTime(date: string | Date): string {
