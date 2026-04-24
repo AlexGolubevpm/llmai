@@ -15,6 +15,7 @@ enum JobType {
   SEO_CATEGORIES
   PBN
   CATEGORIZE
+  FEED_DESCRIPTIONS
 }
 
 enum JobStatus {

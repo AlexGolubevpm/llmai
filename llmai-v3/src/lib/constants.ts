@@ -47,6 +47,7 @@ export const JOB_TYPE_CONFIG: Record<
   SEO_CATEGORIES: { label: "SEO Categories", icon: "PenLine" },
   PBN: { label: "PBN тексты", icon: "Link2" },
   CATEGORIZE: { label: "Категоризация", icon: "Tags" },
+  FEED_DESCRIPTIONS: { label: "Описания фида", icon: "FileText" },
 };
 
 export function formatRelativeTime(date: string | Date): string {
